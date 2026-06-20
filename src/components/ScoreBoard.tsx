@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Player, Round } from '../types';
-import { Trophy, Medal, ArrowUp, ArrowDown, Award, Crown, Zap } from 'lucide-react';
+import { Trophy, Medal, ArrowUp, ArrowDown, Award, Crown, Zap, Share2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { PlayerAvatar } from './PlayerAvatar';
+import { ShareCardModal } from './ShareCardModal';
 
 function AnimatedNumber({ value }: { value: number }) {
   const [displayValue, setDisplayValue] = useState(value);
@@ -56,6 +57,7 @@ interface ScoreBoardProps {
 }
 
 export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, onUpdatePlayer, isAdmin = false }: ScoreBoardProps) {
+  const [showShareModal, setShowShareModal] = useState(false);
   const isEditAllowed = status === 'playing' || (status === 'ended' && isAdmin);
 
   const handleAvatarClick = (playerId: string) => {
@@ -157,10 +159,18 @@ export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, on
             </p>
           </div>
 
-          <div className="pt-2">
+          <div className="pt-2 flex flex-col sm:flex-row gap-3 justify-center items-center">
+            <button
+              onClick={() => setShowShareModal(true)}
+              className="px-6 py-3 bg-transparent border-2 border-editorial-gold text-editorial-gold hover:text-black hover:bg-editorial-gold font-black uppercase tracking-widest text-[#dcae44] text-xs rounded-none transition-all flex items-center justify-center gap-2 cursor-pointer w-full sm:w-auto"
+              id="share-match-result-btn"
+            >
+              <Share2 className="w-4 h-4" />
+              Share Result
+            </button>
             <button
               onClick={onResetGame}
-              className="px-6 py-3 bg-editorial-gold hover:bg-amber-400 text-black font-black uppercase tracking-widest text-xs rounded-none transition-colors cursor-pointer"
+              className="px-6 py-3 bg-editorial-gold hover:bg-amber-400 text-black font-black uppercase tracking-widest text-xs rounded-none transition-colors cursor-pointer w-full sm:w-auto"
               id="congrats-new-game-btn"
             >
               Start New Play
@@ -298,6 +308,13 @@ export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, on
           </button>
         </div>
       )}
+
+      <ShareCardModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        players={players}
+        rounds={rounds}
+      />
     </div>
   );
 }

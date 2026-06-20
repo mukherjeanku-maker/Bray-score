@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { SavedGame, Player, Round } from '../types';
-import { Search, Calendar, ChevronDown, ChevronUp, Trophy, ArrowRight, Trash2, X, Archive, Club } from 'lucide-react';
+import { Search, Calendar, ChevronDown, ChevronUp, Trophy, ArrowRight, Trash2, X, Archive, Club, Share2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { ShareCardModal } from './ShareCardModal';
 
 interface GameHistoryProps {
   games: SavedGame[];
@@ -16,6 +17,7 @@ export function GameHistory({ games, onClearHistory, onDeleteGame, isAdmin = fal
   const [selectedDate, setSelectedDate] = useState('');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [sharedGame, setSharedGame] = useState<SavedGame | null>(null);
 
   // Admin Editing states for completed matches
   const [editingGame, setEditingGame] = useState<SavedGame | null>(null);
@@ -368,29 +370,45 @@ export function GameHistory({ games, onClearHistory, onDeleteGame, isAdmin = fal
                                 </div>
                               </div>
 
-                              {/* Delete & Correct Individual Record */}
-                              {isAdmin && (
-                                <div className="flex justify-end gap-3 pt-2">
+                              {/* Action Buttons: Sharing + Admin Operations */}
+                              <div className="flex flex-wrap justify-between items-center gap-3 pt-3 mt-1 border-t border-editorial-border/30">
+                                <div>
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleStartEditGame(game);
+                                      setSharedGame(game);
                                     }}
-                                    className="text-[9px] uppercase tracking-wider font-bold text-editorial-gold hover:text-white transition-colors bg-[#1c1914] border border-editorial-gold/30 hover:border-editorial-gold/60 px-3 py-1.5 rounded-none font-mono flex items-center gap-1 cursor-pointer"
+                                    className="text-[9px] uppercase tracking-wider font-mono font-bold text-editorial-gold hover:text-black hover:bg-editorial-gold transition-all duration-200 border border-editorial-gold/45 bg-[#12110e] px-3.5 py-1.5 rounded-none flex items-center gap-1.5 cursor-pointer"
+                                    id={`share-archived-btn-${game.id}`}
                                   >
-                                    ✏️ Correct Wrong Entries
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setGameToDeleteId(game.id);
-                                    }}
-                                    className="text-[9px] uppercase tracking-wider font-bold text-red-500 hover:text-red-400 transition-colors bg-red-950/20 active:bg-red-950/40 border border-red-900/30 hover:border-red-500/30 px-3 py-1.5 rounded-none font-mono flex items-center gap-1 cursor-pointer"
-                                  >
-                                    <Trash2 className="w-3 h-3" /> Delete Session Record
+                                    <Share2 className="w-3 h-3" />
+                                    <span>Share Result Card</span>
                                   </button>
                                 </div>
-                              )}
+
+                                {isAdmin && (
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleStartEditGame(game);
+                                      }}
+                                      className="text-[9px] uppercase tracking-wider font-mono font-bold text-slate-300 hover:text-white transition-colors bg-[#1c1914]/80 hover:bg-[#12110e] border border-editorial-border/60 hover:border-editorial-gold/40 px-3 py-1.5 rounded-none flex items-center gap-1 cursor-pointer"
+                                    >
+                                      ✏️ Correct Entries
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setGameToDeleteId(game.id);
+                                      }}
+                                      className="text-[9px] uppercase tracking-wider font-mono font-bold text-red-500 hover:text-red-400 transition-colors bg-red-950/10 active:bg-red-950/30 border border-red-900/30 hover:border-red-500/30 px-3 py-1.5 rounded-none flex items-center gap-1 cursor-pointer"
+                                    >
+                                      🗑️ Delete
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </motion.div>
                         )}
@@ -642,6 +660,14 @@ export function GameHistory({ games, onClearHistory, onDeleteGame, isAdmin = fal
           </div>
         )}
       </AnimatePresence>
+
+      <ShareCardModal
+        isOpen={sharedGame !== null}
+        onClose={() => setSharedGame(null)}
+        players={sharedGame?.players || []}
+        rounds={sharedGame?.rounds || []}
+        dateString={sharedGame ? formatDateGroup(sharedGame.date) : undefined}
+      />
     </div>
   );
 }

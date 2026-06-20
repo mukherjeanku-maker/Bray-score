@@ -98,6 +98,10 @@ export default function App() {
   // Cached names for fast loading on reuse
   const [savedPlayers, setSavedPlayers] = useState<Player[]>([]);
 
+  // Auto-save tracker states
+  const [lastAutoSavedTime, setLastAutoSavedTime] = useState<string | null>(null);
+  const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false);
+
   // --- INITIAL LOAD FROM LOCAL STORAGE ---
   useEffect(() => {
     try {
@@ -150,6 +154,11 @@ export default function App() {
       if (storedRounds) {
         setRounds(JSON.parse(storedRounds));
       }
+
+      const storedLastSave = localStorage.getItem('bray_last_autosave_time');
+      if (storedLastSave) {
+        setLastAutoSavedTime(storedLastSave);
+      }
     } catch (err) {
       console.error("Local storage restoration failed:", err);
     }
@@ -172,6 +181,50 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('bray_active_status', status);
+  }, [status]);
+
+  // Maintain hot-sync auto-saved time on active playing sessions when users log edits
+  useEffect(() => {
+    if (status === 'playing') {
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      localStorage.setItem('bray_last_autosave_time', now);
+      setLastAutoSavedTime(now);
+    }
+  }, [players.length, rounds.length, status]);
+
+  // Safe ref cache of active table variables to comply with React production hooks rulebook
+  const activeTableRef = React.useRef({ players, rounds, status });
+  useEffect(() => {
+    activeTableRef.current = { players, rounds, status };
+  }, [players, rounds, status]);
+
+  // --- PERIODIC 30-SECOND AUTO-SAVER NET ---
+  useEffect(() => {
+    if (status !== 'playing') {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setIsAutoSaving(true);
+      try {
+        const { players: currentPlayers, rounds: currentRounds, status: currentStatus } = activeTableRef.current;
+        localStorage.setItem('bray_active_players', JSON.stringify(currentPlayers));
+        localStorage.setItem('bray_active_rounds', JSON.stringify(currentRounds));
+        localStorage.setItem('bray_active_status', currentStatus);
+
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        localStorage.setItem('bray_last_autosave_time', now);
+        setLastAutoSavedTime(now);
+      } catch (err) {
+        console.error("30-second periodic background auto-saver error:", err);
+      } finally {
+        setTimeout(() => {
+          setIsAutoSaving(false);
+        }, 1500);
+      }
+    }, 30000); // 30 seconds interval check
+
+    return () => clearInterval(interval);
   }, [status]);
 
   // --- ACTIONS ---
@@ -609,7 +662,7 @@ export default function App() {
               {/* Record Round Action Box */}
               {status === 'playing' && (
                 <div className="bg-editorial-dark border border-editorial-border p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-6 hover:border-editorial-gold/30 transition-all duration-350" id="action-trigger-box">
-                  <div className="space-y-1">
+                  <div className="space-y-1 flex flex-col items-start">
                     <span className="text-[10px] uppercase tracking-[0.2em] font-black text-editorial-gold block">
                       Live Tournament Status
                     </span>
@@ -619,6 +672,12 @@ export default function App() {
                     <p className="text-xs text-[#8e8271] max-w-md">
                       Individual Bray scoring rules enforced. Tap record to calculate tally for Round {rounds.length + 1}.
                     </p>
+                    {lastAutoSavedTime && (
+                      <span className="inline-flex items-center gap-1.5 text-[9px] font-mono text-[#dcae44] mt-2 bg-[#1c1914] border border-[#dcae44]/20 px-2 py-0.5 rounded-none" id="save-status-badge">
+                        <span className={`w-1.5 h-1.5 rounded-full bg-editorial-gold ${isAutoSaving ? 'animate-ping' : 'animate-pulse'}`}></span>
+                        {isAutoSaving ? 'SESSION BACKUP LIVE...' : `Auto-saved locally: ${lastAutoSavedTime}`}
+                      </span>
+                    )}
                   </div>
 
                   <button
@@ -662,6 +721,11 @@ export default function App() {
           Agnibina Sangha • Est. 1947
         </div>
         <div className="flex gap-6 text-[10px] uppercase tracking-widest text-editorial-muted font-mono">
+          {status === 'playing' && (
+            <span className="flex items-center gap-1.5 text-editorial-gold font-bold transition-all" id="footer-save-timer-display">
+              ⚜️ {isAutoSaving ? 'Auto-saving Table state...' : lastAutoSavedTime ? `Tally saved at ${lastAutoSavedTime}` : 'Autosave Armed'}
+            </span>
+          )}
           <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-editorial-gold animate-pulse"></span> Local Storage Active</span>
           <span>Cloud Sync Ready</span>
         </div>
