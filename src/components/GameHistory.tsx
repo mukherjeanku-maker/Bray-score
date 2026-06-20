@@ -7,13 +7,82 @@ interface GameHistoryProps {
   games: SavedGame[];
   onClearHistory: () => void;
   onDeleteGame: (gameId: string) => void;
+  isAdmin?: boolean;
+  onUpdateCompletedGame?: (updatedGame: SavedGame) => void;
 }
 
-export function GameHistory({ games, onClearHistory, onDeleteGame }: GameHistoryProps) {
+export function GameHistory({ games, onClearHistory, onDeleteGame, isAdmin = false, onUpdateCompletedGame }: GameHistoryProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  // Admin Editing states for completed matches
+  const [editingGame, setEditingGame] = useState<SavedGame | null>(null);
+  const [showModifyConfirm, setShowModifyConfirm] = useState(false);
+  const [gameToDeleteId, setGameToDeleteId] = useState<string | null>(null);
+
+  const handleStartEditGame = (game: SavedGame) => {
+    setEditingGame(JSON.parse(JSON.stringify(game)));
+  };
+
+  const handleScoreChange = (roundIndex: number, playerId: string, value: number) => {
+    if (!editingGame) return;
+    const nextRounds = [...editingGame.rounds];
+    nextRounds[roundIndex] = {
+      ...nextRounds[roundIndex],
+      scores: {
+        ...nextRounds[roundIndex].scores,
+        [playerId]: value
+      }
+    };
+    setEditingGame({
+      ...editingGame,
+      rounds: nextRounds
+    });
+  };
+
+  const handleDeleteRoundInEdit = (roundIndex: number) => {
+    if (!editingGame) return;
+    let nextRounds = editingGame.rounds.filter((_, idx) => idx !== roundIndex);
+    nextRounds = nextRounds.map((r, idx) => ({
+      ...r,
+      roundNumber: idx + 1
+    }));
+    setEditingGame({
+      ...editingGame,
+      rounds: nextRounds
+    });
+  };
+
+  const handleAddRoundInEdit = () => {
+    if (!editingGame) return;
+    const newRoundNumber = editingGame.rounds.length + 1;
+    const initialScores: Record<string, number> = {};
+    editingGame.players.forEach((p) => {
+      initialScores[p.id] = 0;
+    });
+    const newRound: Round = {
+      roundNumber: newRoundNumber,
+      scores: initialScores
+    };
+    setEditingGame({
+      ...editingGame,
+      rounds: [...editingGame.rounds, newRound]
+    });
+  };
+
+  const handleSaveEditGame = () => {
+    setShowModifyConfirm(true);
+  };
+
+  const handleConfirmSaveEditGame = () => {
+    if (editingGame && onUpdateCompletedGame) {
+      onUpdateCompletedGame(editingGame);
+    }
+    setEditingGame(null);
+    setShowModifyConfirm(false);
+  };
 
   // Group games by date (e.g. "Thursday, Jun 18, 2026")
   const formatDateGroup = (dateStr: string) => {
@@ -96,7 +165,7 @@ export function GameHistory({ games, onClearHistory, onDeleteGame }: GameHistory
           <h3 className="text-xs uppercase tracking-[0.3em] font-bold text-editorial-gold flex items-center gap-1.5">
             <Archive className="w-4 h-4" /> Match Archive Search
           </h3>
-          {games.length > 0 && (
+          {isAdmin && games.length > 0 && (
             <button
               onClick={() => setShowClearConfirm(true)}
               className="text-[10px] uppercase font-bold text-red-400 hover:text-red-300 transition-colors flex items-center gap-1 cursor-pointer font-mono"
@@ -299,18 +368,29 @@ export function GameHistory({ games, onClearHistory, onDeleteGame }: GameHistory
                                 </div>
                               </div>
 
-                              {/* Delete Individual Record */}
-                              <div className="flex justify-end pt-2">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteGame(game.id);
-                                  }}
-                                  className="text-[9px] uppercase tracking-wider font-bold text-red-500 hover:text-red-400 transition-colors bg-red-950/20 active:bg-red-950/40 border border-red-900/30 hover:border-red-500/30 px-3 py-1.5 rounded-none font-mono"
-                                >
-                                  Delete Session Record
-                                </button>
-                              </div>
+                              {/* Delete & Correct Individual Record */}
+                              {isAdmin && (
+                                <div className="flex justify-end gap-3 pt-2">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleStartEditGame(game);
+                                    }}
+                                    className="text-[9px] uppercase tracking-wider font-bold text-editorial-gold hover:text-white transition-colors bg-[#1c1914] border border-editorial-gold/30 hover:border-editorial-gold/60 px-3 py-1.5 rounded-none font-mono flex items-center gap-1 cursor-pointer"
+                                  >
+                                    ✏️ Correct Wrong Entries
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setGameToDeleteId(game.id);
+                                    }}
+                                    className="text-[9px] uppercase tracking-wider font-bold text-red-500 hover:text-red-400 transition-colors bg-red-950/20 active:bg-red-950/40 border border-red-900/30 hover:border-red-500/30 px-3 py-1.5 rounded-none font-mono flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3 h-3" /> Delete Session Record
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </motion.div>
                         )}
@@ -361,6 +441,201 @@ export function GameHistory({ games, onClearHistory, onDeleteGame }: GameHistory
                   className="flex-1 py-2.5 bg-red-950/30 hover:bg-red-900 text-red-300 hover:text-white border border-red-900 font-bold uppercase tracking-widest text-[10px] transition-colors cursor-pointer"
                 >
                   Confirm Clear
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Game Deletion confirmation Modal */}
+      <AnimatePresence>
+        {gameToDeleteId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xs select-none">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-editorial-dark border border-red-900/60 p-8 max-w-sm w-full space-y-4 relative"
+              id="game-delete-confirm-modal"
+            >
+              <div className="flex flex-col gap-1 text-red-400">
+                <span className="text-[10px] tracking-[0.25em] font-black uppercase text-red-500 font-mono">DANGEROUS ACTION</span>
+                <h4 className="text-xl font-black uppercase text-white">
+                  Delete Match Record?
+                </h4>
+              </div>
+
+              <div className="text-xs text-red-300 font-mono leading-relaxed bg-[#1c0d0a]/30 border border-red-900/40 p-4">
+                This will permanently delete all game history. Continue?
+              </div>
+
+              <div className="flex gap-4 pt-2">
+                <button
+                  onClick={() => setGameToDeleteId(null)}
+                  className="flex-1 py-2.5 bg-transparent border border-editorial-border hover:bg-white/5 font-bold uppercase tracking-widest text-[10px] text-editorial-text transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (gameToDeleteId) {
+                      onDeleteGame(gameToDeleteId);
+                    }
+                    setGameToDeleteId(null);
+                  }}
+                  className="flex-1 py-2.5 bg-red-950/30 hover:bg-red-900 text-red-300 hover:text-white border border-red-900 font-bold uppercase tracking-widest text-[10px] transition-colors cursor-pointer"
+                  id="game-delete-confirm-btn"
+                >
+                  Confirm Delete
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Game Corrective/Editing Modal */}
+      <AnimatePresence>
+        {editingGame && (
+          <div className="fixed inset-0 z-[40] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xs overflow-y-auto">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-editorial-dark border border-editorial-border p-6 max-w-2xl w-full space-y-6 relative my-8"
+              id="game-edit-modal"
+            >
+              <div className="flex justify-between items-start">
+                <div className="space-y-1">
+                  <span className="text-[9px] tracking-[0.25em] font-black uppercase text-editorial-gold font-mono block">ADMIN CORRECTIVE DISCIPLINE</span>
+                  <h4 className="text-2xl font-black uppercase text-white">
+                    Correct Ledger Entries
+                  </h4>
+                  <p className="text-xs text-editorial-muted">Editing completed match record: <span className="font-mono text-editorial-gold">Session ID {editingGame.id.split('-')[2] || 'Bray'}</span></p>
+                </div>
+                <button 
+                  onClick={() => setEditingGame(null)} 
+                  className="text-editorial-muted hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Editing Score Matrix */}
+              <div className="border border-editorial-border/60 overflow-hidden bg-[#0a0a0a]">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left font-mono text-xs">
+                    <thead>
+                      <tr className="bg-[#0f0e0c] text-editorial-gold border-b border-editorial-border">
+                        <th className="p-3 text-center w-14 font-bold border-r border-editorial-border/60">Rd</th>
+                        {editingGame.players.map((p) => (
+                          <th key={p.id} className="p-3 text-center border-l border-editorial-border/40 font-sans uppercase font-bold text-slate-300">
+                            {p.name}
+                          </th>
+                        ))}
+                        <th className="p-3 text-center w-16">Del</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-editorial-border/30">
+                      {editingGame.rounds.map((round, rIndex) => (
+                        <tr key={round.roundNumber} className="hover:bg-white/5">
+                          <td className="p-2 text-center font-black text-editorial-gold bg-[#0f0e0c]/30 border-r border-editorial-border/60">
+                            {String(round.roundNumber).padStart(2, '0')}
+                          </td>
+                          {editingGame.players.map((p) => (
+                            <td key={p.id} className="p-2 border-l border-editorial-border/30 text-center">
+                              <input
+                                type="number"
+                                value={round.scores[p.id] !== undefined ? round.scores[p.id] : 0}
+                                onChange={(e) => handleScoreChange(rIndex, p.id, Number(e.target.value))}
+                                className="w-16 bg-black border border-editorial-border text-center text-xs text-white p-1 rounded-none outline-none font-mono focus:border-editorial-gold"
+                              />
+                            </td>
+                          ))}
+                          <td className="p-2 text-center">
+                            <button
+                              onClick={() => handleDeleteRoundInEdit(rIndex)}
+                              className="text-red-400 hover:text-red-300 transition-colors p-1"
+                              title="Delete Round Row"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 mx-auto" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="p-3 bg-[#0d0d0d] border-t border-editorial-border/40 flex justify-between">
+                  <button
+                    onClick={handleAddRoundInEdit}
+                    className="text-[10px] uppercase font-mono font-bold text-editorial-gold hover:text-white transition-colors"
+                  >
+                    + Add New Round Row
+                  </button>
+                  <span className="text-[9px] uppercase font-mono text-editorial-muted self-center">
+                    {editingGame.rounds.length} Rounds Compiled
+                  </span>
+                </div>
+              </div>
+
+              {/* Save/Cancel Controls */}
+              <div className="flex gap-4 justify-end border-t border-editorial-border/40 pt-4">
+                <button
+                  onClick={() => setEditingGame(null)}
+                  className="px-5 py-2.5 bg-transparent border border-editorial-border hover:bg-white/5 text-xs text-editorial-muted font-bold uppercase tracking-widest rounded-none transition-colors"
+                >
+                  Discard
+                </button>
+                <button
+                  onClick={handleSaveEditGame}
+                  className="px-6 py-2.5 bg-editorial-gold hover:bg-amber-400 text-black font-black text-xs uppercase tracking-widest rounded-none transition-colors"
+                >
+                  Save Corrections
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Confirmation of modified completed game */}
+      <AnimatePresence>
+        {showModifyConfirm && (
+          <div className="fixed inset-0 z-[50] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xs select-none">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-editorial-dark border border-editorial-gold/40 p-8 max-w-sm w-full space-y-4 relative"
+              id="modify-confirm-modal"
+            >
+              <div className="flex flex-col gap-1 text-editorial-gold">
+                <span className="text-[10px] tracking-[0.25em] font-black uppercase font-mono">CONFIDENTIAL REVISION</span>
+                <h4 className="text-xl font-black uppercase text-white">
+                  Confirm Corrections?
+                </h4>
+              </div>
+
+              <div className="text-xs text-editorial-gold font-mono leading-relaxed bg-[#1b1712] border border-editorial-gold/30 p-4">
+                This will modify completed match data. Continue?
+              </div>
+
+              <div className="flex gap-4 pt-2">
+                <button
+                  onClick={() => setShowModifyConfirm(false)}
+                  className="flex-1 py-2.5 bg-transparent border border-editorial-border hover:bg-white/5 font-bold uppercase tracking-widest text-[10px] text-editorial-text transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmSaveEditGame}
+                  className="flex-1 py-2.5 bg-editorial-gold hover:bg-amber-400 text-black font-black uppercase tracking-widest text-[10px] transition-colors cursor-pointer"
+                  id="modify-confirm-btn"
+                >
+                  Yes, Continue
                 </button>
               </div>
             </motion.div>

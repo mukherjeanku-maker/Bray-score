@@ -10,6 +10,7 @@ interface ClubMembersProps {
   onUpdatePlayer: (player: Player) => void;
   onDeletePlayer: (playerId: string) => void;
   games: SavedGame[];
+  isAdmin?: boolean;
 }
 
 export default function ClubMembers({
@@ -17,7 +18,8 @@ export default function ClubMembers({
   onAddPlayer,
   onUpdatePlayer,
   onDeletePlayer,
-  games
+  games,
+  isAdmin = false
 }: ClubMembersProps) {
   // Search query
   const [searchQuery, setSearchQuery] = useState('');
@@ -245,7 +247,8 @@ export default function ClubMembers({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         
         {/* Form panel */}
-        <div className="lg:col-span-5 space-y-6" id="member-form-top">
+        {isAdmin && (
+          <div className="lg:col-span-5 space-y-6" id="member-form-top">
           <div className="bg-editorial-dark border border-editorial-border p-5 sm:p-6 relative space-y-5">
             <div className="flex justify-between items-center border-b border-editorial-border/60 pb-3">
               <h3 className="text-sm font-black uppercase tracking-widest text-[#ece5d8] flex items-center gap-2">
@@ -363,9 +366,10 @@ export default function ClubMembers({
             </form>
           </div>
         </div>
+        )}
 
         {/* Directory List panel */}
-        <div className="lg:col-span-7 space-y-6" id="member-directory-container">
+        <div className={isAdmin ? "lg:col-span-7 space-y-6" : "lg:col-span-12 space-y-6"} id="member-directory-container">
           
           {/* Search filters */}
           <div className="bg-editorial-dark border border-editorial-border p-4 flex gap-3 relative items-center">
@@ -447,26 +451,28 @@ export default function ClubMembers({
                       </div>
 
                       {/* Action buttons */}
-                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-                        <button
-                          type="button"
-                          onClick={() => handleStartEdit(p)}
-                          className="p-2 border border-editorial-border hover:border-editorial-gold text-editorial-muted hover:text-white transition-colors cursor-pointer"
-                          title="Edit Profile"
-                          id={`edit-btn-${p.id}`}
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setProfileToDelete(p)}
-                          className="p-2 border border-editorial-border hover:border-red-950 text-editorial-muted hover:text-rose-400 hover:bg-rose-950/10 transition-colors cursor-pointer"
-                          title="Delete Profile"
-                          id={`delete-btn-${p.id}`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      {isAdmin && (
+                        <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                          <button
+                            type="button"
+                            onClick={() => handleStartEdit(p)}
+                            className="p-2 border border-editorial-border hover:border-editorial-gold text-editorial-muted hover:text-white transition-colors cursor-pointer"
+                            title="Edit Profile"
+                            id={`edit-btn-${p.id}`}
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setProfileToDelete(p)}
+                            className="p-2 border border-editorial-border hover:border-red-950 text-editorial-muted hover:text-rose-400 hover:bg-rose-950/10 transition-colors cursor-pointer"
+                            title="Delete Profile"
+                            id={`delete-btn-${p.id}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -514,8 +520,8 @@ export default function ClubMembers({
                 </div>
               </div>
 
-              <div className="text-[10px] text-red-300 font-mono uppercase tracking-wider leading-relaxed bg-[#1c0d0a]/30 border border-red-900/30 p-3">
-                ⚠️ Revoking membership cancels their directory account permanently. Historic matches in the Agnibina Archives containing this Player ID will remain intact, but they cannot be selected for future Bray games.
+              <div className="text-xs text-red-300 font-mono leading-relaxed bg-[#1c0d0a]/30 border border-red-900/40 p-4">
+                This will permanently delete all game history. Continue?
               </div>
 
               <div className="flex gap-3 pt-2">

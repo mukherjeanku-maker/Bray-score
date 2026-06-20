@@ -8,9 +8,13 @@ interface HistoryTableProps {
   rounds: Round[];
   onUndoLastRound: () => void;
   onEditRound?: (round: Round) => void;
+  isAdmin?: boolean;
+  status?: 'setup' | 'playing' | 'ended';
 }
 
-export function HistoryTable({ players, rounds, onUndoLastRound, onEditRound }: HistoryTableProps) {
+export function HistoryTable({ players, rounds, onUndoLastRound, onEditRound, isAdmin = false, status = 'playing' }: HistoryTableProps) {
+  const isEditAllowed = status === 'playing' || (status === 'ended' && isAdmin);
+
   if (rounds.length === 0) {
     return (
       <div className="bg-editorial-dark border border-editorial-border rounded-none p-10 text-center text-editorial-muted" id="empty-history">
@@ -37,15 +41,17 @@ export function HistoryTable({ players, rounds, onUndoLastRound, onEditRound }: 
         </h3>
 
         {/* Undo Button */}
-        <button
-          onClick={onUndoLastRound}
-          className="text-[10px] uppercase font-bold bg-transparent hover:bg-red-950/20 hover:text-red-300 border border-editorial-border hover:border-red-900/60 text-editorial-muted px-4 py-2 rounded-none transition-colors flex items-center gap-2 cursor-pointer font-mono"
-          title="Delete the most recently added round scores"
-          id="undo-last-btn"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          Undo Last Round
-        </button>
+        {isEditAllowed && (
+          <button
+            onClick={onUndoLastRound}
+            className="text-[10px] uppercase font-bold bg-transparent hover:bg-red-950/20 hover:text-red-300 border border-editorial-border hover:border-red-900/60 text-editorial-muted px-4 py-2 rounded-none transition-colors flex items-center gap-2 cursor-pointer font-mono"
+            title="Delete the most recently added round scores"
+            id="undo-last-btn"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            Undo Last Round
+          </button>
+        )}
       </div>
 
       <div className="overflow-x-auto rounded-none border border-editorial-border" id="table-scroll-wrapper">
@@ -77,7 +83,7 @@ export function HistoryTable({ players, rounds, onUndoLastRound, onEditRound }: 
                     <span className="font-black text-editorial-gold text-sm">
                       {String(round.roundNumber).padStart(2, '0')}
                     </span>
-                    {onEditRound && (
+                    {onEditRound && isEditAllowed && (
                       <button
                         onClick={() => onEditRound(round)}
                         className="text-[9px] uppercase tracking-widest font-mono font-bold text-editorial-gold hover:text-white mt-1 cursor-pointer hover:underline"

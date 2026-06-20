@@ -52,10 +52,14 @@ interface ScoreBoardProps {
   onEndGame: () => void;
   onResetGame: () => void;
   onUpdatePlayer?: (player: Player) => void;
+  isAdmin?: boolean;
 }
 
-export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, onUpdatePlayer }: ScoreBoardProps) {
+export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, onUpdatePlayer, isAdmin = false }: ScoreBoardProps) {
+  const isEditAllowed = status === 'playing' || (status === 'ended' && isAdmin);
+
   const handleAvatarClick = (playerId: string) => {
+    if (!isEditAllowed) return;
     document.getElementById(`avatar-upload-${playerId}`)?.click();
   };
 
@@ -210,8 +214,8 @@ export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, on
                       name={player.name}
                       avatarUrl={player.avatarUrl}
                       size="w-14 h-14 sm:w-16 sm:h-16"
-                      onClick={() => handleAvatarClick(player.id)}
-                      editable={true}
+                      onClick={isEditAllowed ? () => handleAvatarClick(player.id) : undefined}
+                      editable={isEditAllowed}
                     />
                     <input
                       type="file"
@@ -235,12 +239,14 @@ export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, on
                         "{player.nickname}"
                       </div>
                     )}
-                    <button
-                      onClick={() => handleAvatarClick(player.id)}
-                      className="text-[9px] text-[#8e8271] hover:text-editorial-gold font-mono uppercase tracking-wider block mt-1 hover:underline cursor-pointer"
-                    >
-                      Change DP
-                    </button>
+                    {isEditAllowed && (
+                      <button
+                        onClick={() => handleAvatarClick(player.id)}
+                        className="text-[9px] text-[#8e8271] hover:text-editorial-gold font-mono uppercase tracking-wider block mt-1 hover:underline cursor-pointer"
+                      >
+                        Change DP
+                      </button>
+                    )}
                   </div>
                 </div>
 

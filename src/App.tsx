@@ -8,7 +8,8 @@ import { ScoreBoard } from './components/ScoreBoard';
 import { RoundModal } from './components/RoundModal';
 import { HistoryTable } from './components/HistoryTable';
 import { GameHistory } from './components/GameHistory';
-import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save } from 'lucide-react';
+import AdminPanel from './components/AdminPanel';
+import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): SavedGame[] {
@@ -88,7 +89,8 @@ export default function App() {
   const [editingRound, setEditingRound] = useState<Round | null>(null);
   
   // Navigation tabs for the single-view dashboard
-  const [activeTab, setActiveTab] = useState<'table' | 'members' | 'comparison' | 'history'>('table');
+  const [activeTab, setActiveTab] = useState<'table' | 'members' | 'comparison' | 'history' | 'admin'>('table');
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
 
   // Permanent daily match database
   const [history, setHistory] = useState<SavedGame[]>([]);
@@ -323,10 +325,52 @@ export default function App() {
     localStorage.removeItem('bray_games_archive');
   };
 
+  const handleResetAllClubhouseData = () => {
+    const DEFAULT_MEMBERS: Player[] = [
+      { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
+      { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
+      { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
+      { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
+    ];
+    setSavedPlayers(DEFAULT_MEMBERS);
+    localStorage.setItem('bray_saved_players_cache', JSON.stringify(DEFAULT_MEMBERS));
+
+    setHistory([]);
+    localStorage.removeItem('bray_games_archive');
+
+    setPlayers([]);
+    setRounds([]);
+    setStatus('setup');
+    localStorage.removeItem('bray_active_players');
+    localStorage.removeItem('bray_active_rounds');
+    localStorage.removeItem('bray_active_status');
+
+    setActiveTab('table');
+  };
+
   const handleDeleteGame = (gameId: string) => {
     const next = history.filter((g) => g.id !== gameId);
     setHistory(next);
     localStorage.setItem('bray_games_archive', JSON.stringify(next));
+  };
+
+  const handleUpdateCompletedGame = (updatedGame: SavedGame) => {
+    const standings = updatedGame.players.map((p) => {
+      const total = updatedGame.rounds.reduce((sum, r) => sum + (r.scores[p.id] || 0), 0);
+      return { ...p, total };
+    }).sort((a, b) => a.total - b.total);
+
+    const winnerName = standings[0] ? standings[0].name : 'Unknown Player';
+    const nextGame = {
+      ...updatedGame,
+      winnerName
+    };
+
+    setHistory(prev => {
+      const next = prev.map(g => g.id === updatedGame.id ? nextGame : g);
+      localStorage.setItem('bray_games_archive', JSON.stringify(next));
+      return next;
+    });
   };
 
   const triggerResetPrompt = () => {
@@ -370,7 +414,7 @@ export default function App() {
             </div>
           </div>
 
-          {status !== 'setup' && (
+          {isAdmin && status !== 'setup' && (
             <button
               onClick={triggerResetPrompt}
               className="px-4 py-2 bg-transparent text-red-400 hover:text-red-300 hover:bg-red-950/20 text-xs uppercase tracking-widest font-black border border-red-900/40 hover:border-red-500/50 rounded-xs transition-all cursor-pointer font-mono"
@@ -449,6 +493,22 @@ export default function App() {
             />
           ) : null}
         </button>
+        <button
+          onClick={() => setActiveTab('admin')}
+          className={`px-5 py-3 text-xs uppercase tracking-[0.2em] font-bold transition-all relative cursor-pointer flex items-center gap-2 ${
+            activeTab === 'admin' ? 'text-editorial-gold font-bold' : 'text-editorial-muted hover:text-[#e0d6c5]'
+          }`}
+          id="tab-btn-admin"
+        >
+          <Shield className="w-3.5 h-3.5" />
+          Command Core
+          {activeTab === 'admin' ? (
+            <motion.span 
+              layoutId="nav-underline" 
+              className="absolute bottom-[-1px] left-0 right-0 h-[2px] bg-editorial-gold" 
+            />
+          ) : null}
+        </button>
       </div>
 
       {/* Main Body */}
@@ -481,6 +541,7 @@ export default function App() {
                 onUpdatePlayer={handleUpdatePlayer}
                 onDeletePlayer={handleDeleteClubPlayer}
                 games={history}
+                isAdmin={isAdmin}
               />
             </motion.div>
           ) : activeTab === 'history' ? (
@@ -495,6 +556,26 @@ export default function App() {
                 games={history}
                 onClearHistory={handleClearHistory}
                 onDeleteGame={handleDeleteGame}
+                isAdmin={isAdmin}
+                onUpdateCompletedGame={handleUpdateCompletedGame}
+              />
+            </motion.div>
+          ) : activeTab === 'admin' ? (
+            // Secure Admin Panel Pane
+            <motion.div
+              key="admin-panel-pane"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+            >
+              <AdminPanel
+                isAdmin={isAdmin}
+                setIsAdmin={setIsAdmin}
+                onResetActiveGameTable={confirmResetGame}
+                onClearAllGameHistory={handleClearHistory}
+                onResetAllClubhouseData={handleResetAllClubhouseData}
+                savedPlayers={savedPlayers}
+                games={history}
               />
             </motion.div>
           ) : status === 'setup' ? (
@@ -558,6 +639,7 @@ export default function App() {
                 onEndGame={() => setShowEndGameConfirm(true)}
                 onResetGame={confirmResetGame}
                 onUpdatePlayer={handleUpdatePlayer}
+                isAdmin={isAdmin}
               />
 
               {/* Round History Grid Ledger */}
@@ -566,6 +648,8 @@ export default function App() {
                 rounds={rounds}
                 onUndoLastRound={handleUndoLastRound}
                 onEditRound={handleEditRound}
+                isAdmin={isAdmin}
+                status={status}
               />
             </motion.div>
           )}
