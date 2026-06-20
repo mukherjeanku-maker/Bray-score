@@ -11,6 +11,7 @@ interface AdminPanelProps {
   onResetAllClubhouseData: () => void;
   savedPlayers: Player[];
   games: SavedGame[];
+  adminPin?: string;
 }
 
 export default function AdminPanel({
@@ -20,9 +21,10 @@ export default function AdminPanel({
   onClearAllGameHistory,
   onResetAllClubhouseData,
   savedPlayers,
-  games
+  games,
+  adminPin
 }: AdminPanelProps) {
-  const DEFAULT_PIN = '7908'; // New secure admin numeric PIN
+  const DEFAULT_PIN = adminPin || '7908'; // New secure admin numeric PIN
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
   const [showSuccessToast, setShowSuccessToast] = useState(false);

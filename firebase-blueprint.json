@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "ClubMember": {
+      "title": "ClubMember",
+      "description": "Represents a physical club member profile inside the club directory",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique profile ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name"
+        },
+        "officialName": {
+          "type": "string",
+          "description": "Full official name"
+        },
+        "nickname": {
+          "type": "string",
+          "description": "Optional shorthand moniker"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "Optional avatar Base64 string or url"
+        }
+      },
+      "required": ["id", "name", "officialName"]
+    },
+    "GameRound": {
+      "title": "GameRound",
+      "description": "Represents a single round with individual scores mapped by player id",
+      "type": "object",
+      "properties": {
+        "roundNumber": {
+          "type": "integer"
+        },
+        "scores": {
+          "type": "object",
+          "description": "Key value pair mapping player id to points scored"
+        }
+      },
+      "required": ["roundNumber", "scores"]
+    },
+    "SavedGame": {
+      "title": "SavedGame",
+      "description": "Represents an archived historical match ledger entry",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "players": {
+          "type": "array"
+        },
+        "rounds": {
+          "type": "array"
+        },
+        "date": {
+          "type": "string"
+        },
+        "winnerName": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "players", "rounds", "date", "winnerName"]
+    },
+    "ActiveMatch": {
+      "title": "ActiveMatch",
+      "description": "Represents current game state running on the main live table",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "players": {
+          "type": "array"
+        },
+        "rounds": {
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "players", "rounds", "status"]
+    },
+    "AdminSettings": {
+      "title": "AdminSettings",
+      "description": "Clubhouse administrative pin and restriction parameters",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "adminPin": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "adminPin"]
+    }
+  },
+  "firestore": {
+    "/members/{memberId}": {
+      "schema": "ClubMember",
+      "description": "Permanent database index of club member profiles"
+    },
+    "/games/{gameId}": {
+      "schema": "SavedGame",
+      "description": "Archived Bray match ledgers"
+    },
+    "/live_table/{tableId}": {
+      "schema": "ActiveMatch",
+      "description": "Active realtime bray match in progress (tableId is 'current')"
+    },
+    "/settings/{settingsId}": {
+      "schema": "AdminSettings",
+      "description": "Synced admin overrides (settingsId is 'global')"
+    }
+  }
+}

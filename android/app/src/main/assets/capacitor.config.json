@@ -1,0 +1,8 @@
+{
+	"appId": "com.agnibinasangha.braytracker",
+	"appName": "Agnibina Sangha",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	}
+}

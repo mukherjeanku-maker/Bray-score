@@ -11,6 +11,8 @@ import { GameHistory } from './components/GameHistory';
 import AdminPanel from './components/AdminPanel';
 import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { db, authenticateUser } from './lib/firebase';
+import { collection, doc, setDoc, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
 
 function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): SavedGame[] {
   if (!rawHistory || rawHistory.length === 0 || !registry || registry.length === 0) return rawHistory || [];
@@ -101,138 +103,120 @@ export default function App() {
   // Auto-save tracker states
   const [lastAutoSavedTime, setLastAutoSavedTime] = useState<string | null>(null);
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false);
+  const [adminPin, setAdminPin] = useState<string>('7908');
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
 
-  // --- INITIAL LOAD FROM LOCAL STORAGE ---
+  // --- 1. IMPLICIT AUTHENTICATION INITIALIZER ---
   useEffect(() => {
-    try {
-      const storedPlayers = localStorage.getItem('bray_active_players');
-      const storedRounds = localStorage.getItem('bray_active_rounds');
-      const storedStatus = localStorage.getItem('bray_active_status');
-      const storedSavedList = localStorage.getItem('bray_saved_players_cache');
-      const storedArchive = localStorage.getItem('bray_games_archive');
-
-      const DEFAULT_MEMBERS: Player[] = [
-        { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
-        { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
-        { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
-        { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
-      ];
-
-      let activeRegistry = DEFAULT_MEMBERS;
-      if (storedSavedList) {
-        try {
-          activeRegistry = JSON.parse(storedSavedList);
-          setSavedPlayers(activeRegistry);
-        } catch {
-          setSavedPlayers(DEFAULT_MEMBERS);
-          localStorage.setItem('bray_saved_players_cache', JSON.stringify(DEFAULT_MEMBERS));
-        }
-      } else {
-        setSavedPlayers(DEFAULT_MEMBERS);
-        localStorage.setItem('bray_saved_players_cache', JSON.stringify(DEFAULT_MEMBERS));
+    let active = true;
+    authenticateUser().then(() => {
+      if (active) {
+        setIsAuthReady(true);
       }
-
-      if (storedArchive) {
-        try {
-          const rawArchive = JSON.parse(storedArchive);
-          const normalizedArchive = normalizeAndMergeHistory(rawArchive, activeRegistry);
-          setHistory(normalizedArchive);
-          localStorage.setItem('bray_games_archive', JSON.stringify(normalizedArchive));
-        } catch {
-          setHistory([]);
-        }
-      }
-
-      if (storedStatus) {
-        setStatus(storedStatus as 'setup' | 'playing' | 'ended');
-      }
-
-      if (storedPlayers) {
-        setPlayers(JSON.parse(storedPlayers));
-      }
-
-      if (storedRounds) {
-        setRounds(JSON.parse(storedRounds));
-      }
-
-      const storedLastSave = localStorage.getItem('bray_last_autosave_time');
-      if (storedLastSave) {
-        setLastAutoSavedTime(storedLastSave);
-      }
-    } catch (err) {
-      console.error("Local storage restoration failed:", err);
-    }
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  // --- PERSIST ACTIVE STATE CHANGES ---
+  // --- 2. INITIAL LOAD AND SNAPSHOT LISTENERS FROM FIREBASE ---
   useEffect(() => {
-    if (players.length > 0) {
-      localStorage.setItem('bray_active_players', JSON.stringify(players));
-    } else {
-      if (status === 'setup') {
-        localStorage.removeItem('bray_active_players');
+    if (!isAuthReady) return;
+
+    // 1. Listen to active live table state
+    const tableDocRef = doc(db, 'live_table', 'current');
+    const unsubTable = onSnapshot(tableDocRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.players) setPlayers(data.players);
+        if (data.rounds) setRounds(data.rounds);
+        if (data.status) setStatus(data.status);
+        if (data.lastSavedTime) setLastAutoSavedTime(data.lastSavedTime);
+      } else {
+        // Initialize active table doc in Firestore on first-time setup
+        setDoc(tableDocRef, {
+          id: 'current',
+          players: [],
+          rounds: [],
+          status: 'setup',
+          lastSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        }).catch((err) => console.warn("Failed to seed current live table:", err));
       }
-    }
-  }, [players, status]);
+    }, (error) => {
+      console.warn("Table snapshot listener error:", error);
+    });
 
-  useEffect(() => {
-    localStorage.setItem('bray_active_rounds', JSON.stringify(rounds));
-  }, [rounds]);
+    // 2. Listen to Club members
+    const membersColRef = collection(db, 'members');
+    const unsubMembers = onSnapshot(membersColRef, (snapshot) => {
+      const items: Player[] = [];
+      snapshot.forEach((doc) => {
+        items.push(doc.data() as Player);
+      });
 
-  useEffect(() => {
-    localStorage.setItem('bray_active_status', status);
-  }, [status]);
-
-  // Maintain hot-sync auto-saved time on active playing sessions when users log edits
-  useEffect(() => {
-    if (status === 'playing') {
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      localStorage.setItem('bray_last_autosave_time', now);
-      setLastAutoSavedTime(now);
-    }
-  }, [players.length, rounds.length, status]);
-
-  // Safe ref cache of active table variables to comply with React production hooks rulebook
-  const activeTableRef = React.useRef({ players, rounds, status });
-  useEffect(() => {
-    activeTableRef.current = { players, rounds, status };
-  }, [players, rounds, status]);
-
-  // --- PERIODIC 30-SECOND AUTO-SAVER NET ---
-  useEffect(() => {
-    if (status !== 'playing') {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setIsAutoSaving(true);
-      try {
-        const { players: currentPlayers, rounds: currentRounds, status: currentStatus } = activeTableRef.current;
-        localStorage.setItem('bray_active_players', JSON.stringify(currentPlayers));
-        localStorage.setItem('bray_active_rounds', JSON.stringify(currentRounds));
-        localStorage.setItem('bray_active_status', currentStatus);
-
-        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        localStorage.setItem('bray_last_autosave_time', now);
-        setLastAutoSavedTime(now);
-      } catch (err) {
-        console.error("30-second periodic background auto-saver error:", err);
-      } finally {
-        setTimeout(() => {
-          setIsAutoSaving(false);
-        }, 1500);
+      if (items.length === 0) {
+        // Seed initial default members
+        const DEFAULT_MEMBERS: Player[] = [
+          { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
+          { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
+          { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
+          { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
+        ];
+        DEFAULT_MEMBERS.forEach((m) => {
+          setDoc(doc(db, 'members', m.id), m).catch((err) => console.warn("Failed to seed member:", m.id, err));
+        });
+        setSavedPlayers(DEFAULT_MEMBERS);
+      } else {
+        setSavedPlayers(items);
       }
-    }, 30000); // 30 seconds interval check
+    }, (error) => {
+      console.warn("Members snapshot listener error:", error);
+    });
 
-    return () => clearInterval(interval);
-  }, [status]);
+    // 3. Listen to Games archive
+    const gamesColRef = collection(db, 'games');
+    const unsubGames = onSnapshot(gamesColRef, (snapshot) => {
+      const gameEntries: SavedGame[] = [];
+      snapshot.forEach((doc) => {
+        gameEntries.push(doc.data() as SavedGame);
+      });
+      // Sort desc by date
+      gameEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setHistory(gameEntries);
+    }, (error) => {
+      console.warn("Games snapshot listener error:", error);
+    });
+
+    // 4. Listen to Admin Settings
+    const settingsDocRef = doc(db, 'settings', 'global');
+    const unsubSettings = onSnapshot(settingsDocRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.adminPin) {
+          setAdminPin(data.adminPin);
+        }
+      } else {
+        // Seed default settings
+        setDoc(settingsDocRef, {
+          id: 'global',
+          adminPin: '7908'
+        }).catch((err) => console.warn("Failed to seed global settings:", err));
+        setAdminPin('7908');
+      }
+    }, (error) => {
+      console.warn("Settings snapshot listener error:", error);
+    });
+
+    return () => {
+      unsubTable();
+      unsubMembers();
+      unsubGames();
+      unsubSettings();
+    };
+  }, [isAuthReady]);
 
   // --- ACTIONS ---
-  const handleStartGame = (newPlayers: Player[]) => {
-    setRounds([]);
-    setStatus('playing');
-    setActiveTab('table'); // Move view focus automatically to the active board
-
+  const handleStartGame = async (newPlayers: Player[]) => {
     // Resolve canonical profiles synchronously using the CURRENT savedPlayers state
     const canonicalPlayers = newPlayers.map((p) => {
       const existing = savedPlayers.find((m) => {
@@ -260,68 +244,51 @@ export default function App() {
       return p;
     });
 
-    setPlayers(canonicalPlayers);
-    localStorage.setItem('bray_active_players', JSON.stringify(canonicalPlayers));
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    // Save live table state to Firestore
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players: canonicalPlayers,
+      rounds: [],
+      status: 'playing',
+      lastSavedTime: now
+    });
 
-    // Update the permanent saved directory and history cache
-    setSavedPlayers(prev => {
-      const merged = [...prev];
-      canonicalPlayers.forEach(cp => {
-        const idx = merged.findIndex(item => item.id === cp.id);
-        if (idx !== -1) {
-          merged[idx] = { ...merged[idx], ...cp };
-        } else {
-          merged.push(cp);
-        }
-      });
-      localStorage.setItem('bray_saved_players_cache', JSON.stringify(merged));
+    // Write anyone missing or updated profile to members collection
+    canonicalPlayers.forEach(async (cp) => {
+      await setDoc(doc(db, 'members', cp.id), cp);
+    });
 
-      setHistory(currentHistory => {
-        const nextHist = normalizeAndMergeHistory(currentHistory, merged);
-        localStorage.setItem('bray_games_archive', JSON.stringify(nextHist));
-        return nextHist;
-      });
+    setActiveTab('table'); // Move view focus automatically to the active board
+  };
 
-      return merged;
+  const handleUpdatePlayer = async (updatedPlayer: Player) => {
+    await setDoc(doc(db, 'members', updatedPlayer.id), updatedPlayer);
+  };
+
+  const handleAddClubPlayer = async (p: Player) => {
+    await setDoc(doc(db, 'members', p.id), p);
+  };
+
+  const handleDeleteClubPlayer = async (playerIdToRemove: string) => {
+    await deleteDoc(doc(db, 'members', playerIdToRemove));
+    
+    // Update live table in Firestore to setup state
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players: [],
+      rounds: [],
+      status: 'setup',
+      lastSavedTime: now
     });
   };
 
-  const handleUpdatePlayer = (updatedPlayer: Player) => {
-    setPlayers(prev => prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p));
-    setSavedPlayers(prev => {
-      const exists = prev.some(p => p.id === updatedPlayer.id);
-      const next = exists 
-        ? prev.map(p => p.id === updatedPlayer.id ? updatedPlayer : p)
-        : [...prev, updatedPlayer];
-      localStorage.setItem('bray_saved_players_cache', JSON.stringify(next));
-      return next;
-    });
-  };
-
-  const handleAddClubPlayer = (p: Player) => {
-    setSavedPlayers(prev => {
-      const exists = prev.some(item => item.id.toLowerCase() === p.id.toLowerCase());
-      if (exists) return prev;
-      const next = [...prev, p];
-      localStorage.setItem('bray_saved_players_cache', JSON.stringify(next));
-      return next;
-    });
-  };
-
-  const handleDeleteClubPlayer = (playerIdToRemove: string) => {
-    setSavedPlayers(prev => {
-      const next = prev.filter(p => p.id !== playerIdToRemove);
-      localStorage.setItem('bray_saved_players_cache', JSON.stringify(next));
-      return next;
-    });
-    // In case the player is currently sitting at the active setup table, clear active table setting
-    setPlayers([]);
-    setStatus('setup');
-  };
-
-  const handleSaveRound = (roundScores: Record<string, number>) => {
+  const handleSaveRound = async (roundScores: Record<string, number>) => {
+    let nextRounds = [...rounds];
     if (editingRound) {
-      setRounds(prev => prev.map(r => r.roundNumber === editingRound.roundNumber ? { ...r, scores: roundScores } : r));
+      nextRounds = nextRounds.map(r => r.roundNumber === editingRound.roundNumber ? { ...r, scores: roundScores } : r);
       setEditingRound(null);
     } else {
       const nextNum = rounds.length + 1;
@@ -329,8 +296,17 @@ export default function App() {
         roundNumber: nextNum,
         scores: roundScores
       };
-      setRounds(prev => [...prev, newRound]);
+      nextRounds.push(newRound);
     }
+
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players,
+      rounds: nextRounds,
+      status,
+      lastSavedTime: now
+    });
   };
 
   const handleEditRound = (round: Round) => {
@@ -338,12 +314,21 @@ export default function App() {
     setIsRoundModalOpen(true);
   };
 
-  const handleUndoLastRound = () => {
+  const handleUndoLastRound = async () => {
     if (rounds.length === 0) return;
-    setRounds(prev => prev.slice(0, prev.length - 1));
+    const nextRounds = rounds.slice(0, rounds.length - 1);
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players,
+      rounds: nextRounds,
+      status,
+      lastSavedTime: now
+    });
   };
 
-  const handleEndGameStatus = () => {
+  const handleEndGameStatus = async () => {
     if (rounds.length > 0 && players.length > 0) {
       // 1. Calculate final standings for automatic archive save
       const standings = players.map((player) => {
@@ -354,60 +339,75 @@ export default function App() {
       const winnerName = standings[0] ? standings[0].name : 'Unknown Player';
 
       // 2. Draft SavedGame object
+      const gameId = `game-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
       const newArchivedGame: SavedGame = {
-        id: `game-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: gameId,
         players: [...players],
         rounds: [...rounds],
         date: new Date().toISOString(),
         winnerName
       };
 
-      // 3. Append to history list
-      setHistory(prev => {
-        const next = [newArchivedGame, ...prev];
-        localStorage.setItem('bray_games_archive', JSON.stringify(next));
-        return next;
-      });
+      // 3. Store in Firestore Games collection
+      await setDoc(doc(db, 'games', gameId), newArchivedGame);
     }
 
-    setStatus('ended');
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players,
+      rounds,
+      status: 'ended',
+      lastSavedTime: now
+    });
   };
 
-  const handleClearHistory = () => {
-    setHistory([]);
-    localStorage.removeItem('bray_games_archive');
+  const handleClearHistory = async () => {
+    // Delete each game from Firestore
+    history.forEach(async (g) => {
+      await deleteDoc(doc(db, 'games', g.id));
+    });
   };
 
-  const handleResetAllClubhouseData = () => {
+  const handleResetAllClubhouseData = async () => {
+    // 1. Delete all saved games
+    history.forEach(async (g) => {
+      await deleteDoc(doc(db, 'games', g.id));
+    });
+
+    // 2. Clear out existing members and seed defaults
     const DEFAULT_MEMBERS: Player[] = [
       { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
       { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
       { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
       { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
     ];
-    setSavedPlayers(DEFAULT_MEMBERS);
-    localStorage.setItem('bray_saved_players_cache', JSON.stringify(DEFAULT_MEMBERS));
+    // Delete existing savedPlayers from Firestore
+    savedPlayers.forEach(async (m) => {
+      await deleteDoc(doc(db, 'members', m.id));
+    });
+    DEFAULT_MEMBERS.forEach(async (m) => {
+      await setDoc(doc(db, 'members', m.id), m);
+    });
 
-    setHistory([]);
-    localStorage.removeItem('bray_games_archive');
-
-    setPlayers([]);
-    setRounds([]);
-    setStatus('setup');
-    localStorage.removeItem('bray_active_players');
-    localStorage.removeItem('bray_active_rounds');
-    localStorage.removeItem('bray_active_status');
+    // 3. Reset table
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players: [],
+      rounds: [],
+      status: 'setup',
+      lastSavedTime: now
+    });
 
     setActiveTab('table');
   };
 
-  const handleDeleteGame = (gameId: string) => {
-    const next = history.filter((g) => g.id !== gameId);
-    setHistory(next);
-    localStorage.setItem('bray_games_archive', JSON.stringify(next));
+  const handleDeleteGame = async (gameId: string) => {
+    await deleteDoc(doc(db, 'games', gameId));
   };
 
-  const handleUpdateCompletedGame = (updatedGame: SavedGame) => {
+  const handleUpdateCompletedGame = async (updatedGame: SavedGame) => {
     const standings = updatedGame.players.map((p) => {
       const total = updatedGame.rounds.reduce((sum, r) => sum + (r.scores[p.id] || 0), 0);
       return { ...p, total };
@@ -419,25 +419,23 @@ export default function App() {
       winnerName
     };
 
-    setHistory(prev => {
-      const next = prev.map(g => g.id === updatedGame.id ? nextGame : g);
-      localStorage.setItem('bray_games_archive', JSON.stringify(next));
-      return next;
-    });
+    await setDoc(doc(db, 'games', updatedGame.id), nextGame);
   };
 
   const triggerResetPrompt = () => {
     setShowResetConfirm(true);
   };
 
-  const confirmResetGame = () => {
-    setPlayers([]);
-    setRounds([]);
-    setStatus('setup');
+  const confirmResetGame = async () => {
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    await setDoc(doc(db, 'live_table', 'current'), {
+      id: 'current',
+      players: [],
+      rounds: [],
+      status: 'setup',
+      lastSavedTime: now
+    });
     setShowResetConfirm(false);
-    localStorage.removeItem('bray_active_players');
-    localStorage.removeItem('bray_active_rounds');
-    localStorage.removeItem('bray_active_status');
   };
 
 
@@ -629,6 +627,7 @@ export default function App() {
                 onResetAllClubhouseData={handleResetAllClubhouseData}
                 savedPlayers={savedPlayers}
                 games={history}
+                adminPin={adminPin}
               />
             </motion.div>
           ) : status === 'setup' ? (
