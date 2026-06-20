@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Player, Round, SavedGame } from './types';
 import { PlayerSetup } from './components/PlayerSetup';
 import ClubMembers from './components/ClubMembers';
+import TopPlayersSection from './components/TopPlayersSection';
+import PlayerComparison from './components/PlayerComparison';
 import { ScoreBoard } from './components/ScoreBoard';
 import { RoundModal } from './components/RoundModal';
 import { HistoryTable } from './components/HistoryTable';
@@ -86,7 +88,7 @@ export default function App() {
   const [editingRound, setEditingRound] = useState<Round | null>(null);
   
   // Navigation tabs for the single-view dashboard
-  const [activeTab, setActiveTab] = useState<'table' | 'members' | 'history'>('table');
+  const [activeTab, setActiveTab] = useState<'table' | 'members' | 'comparison' | 'history'>('table');
 
   // Permanent daily match database
   const [history, setHistory] = useState<SavedGame[]>([]);
@@ -413,6 +415,21 @@ export default function App() {
           ) : null}
         </button>
         <button
+          onClick={() => setActiveTab('comparison')}
+          className={`px-5 py-3 text-xs uppercase tracking-[0.2em] font-bold transition-all relative cursor-pointer ${
+            activeTab === 'comparison' ? 'text-editorial-gold font-bold' : 'text-editorial-muted hover:text-[#e0d6c5]'
+          }`}
+          id="tab-btn-1v1-compare"
+        >
+          1v1 Duel Compare
+          {activeTab === 'comparison' ? (
+            <motion.span 
+              layoutId="nav-underline" 
+              className="absolute bottom-[-1px] left-0 right-0 h-[2px] bg-editorial-gold" 
+            />
+          ) : null}
+        </button>
+        <button
           onClick={() => setActiveTab('history')}
           className={`px-5 py-3 text-xs uppercase tracking-[0.2em] font-bold transition-all relative cursor-pointer flex items-center gap-2 ${
             activeTab === 'history' ? 'text-editorial-gold font-bold' : 'text-editorial-muted hover:text-[#e0d6c5]'
@@ -437,7 +454,20 @@ export default function App() {
       {/* Main Body */}
       <main className="flex-1 max-w-4xl w-full mx-auto p-6 sm:p-8 space-y-8">
         <AnimatePresence mode="wait">
-          {activeTab === 'members' ? (
+          {activeTab === 'comparison' ? (
+            // 1v1 Performance Comparison Pane
+            <motion.div
+              key="player-comparison-pane"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+            >
+              <PlayerComparison
+                savedPlayers={savedPlayers}
+                games={history}
+              />
+            </motion.div>
+          ) : activeTab === 'members' ? (
             // Club Members directory Pane
             <motion.div
               key="club-members-pane"
@@ -474,12 +504,16 @@ export default function App() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="py-2"
+              className="py-2 space-y-8"
             >
               <PlayerSetup 
                 onStartGame={handleStartGame} 
                 savedPlayers={savedPlayers} 
                 onNavigateToMembers={() => setActiveTab('members')}
+              />
+              <TopPlayersSection
+                history={history}
+                savedPlayers={savedPlayers}
               />
             </motion.div>
           ) : (
