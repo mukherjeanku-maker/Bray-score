@@ -9,10 +9,11 @@ import { RoundModal } from './components/RoundModal';
 import { HistoryTable } from './components/HistoryTable';
 import { GameHistory } from './components/GameHistory';
 import AdminPanel from './components/AdminPanel';
-import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield } from 'lucide-react';
+import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield, Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, authenticateUser } from './lib/firebase';
 import { collection, doc, setDoc, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
+import { useAudioFeedback } from './hooks/useAudioFeedback';
 
 function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): SavedGame[] {
   if (!rawHistory || rawHistory.length === 0 || !registry || registry.length === 0) return rawHistory || [];
@@ -105,6 +106,16 @@ export default function App() {
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false);
   const [adminPin, setAdminPin] = useState<string>('7908');
   const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+
+  // --- AUDIO FEEDBACK & SOUND CONTROLS ---
+  const { playRoundSaved, playResetGame } = useAudioFeedback();
+  const [isMuted, setIsMuted] = useState<boolean>(() => localStorage.getItem('clubhouse_sound_muted') === 'true');
+
+  const toggleMute = () => {
+    const nextVal = !isMuted;
+    setIsMuted(nextVal);
+    localStorage.setItem('clubhouse_sound_muted', String(nextVal));
+  };
 
   // --- 1. IMPLICIT AUTHENTICATION INITIALIZER ---
   useEffect(() => {
@@ -307,6 +318,9 @@ export default function App() {
       status,
       lastSavedTime: now
     });
+
+    // Play subtle success sound chime
+    playRoundSaved();
   };
 
   const handleEditRound = (round: Round) => {
@@ -400,6 +414,7 @@ export default function App() {
       lastSavedTime: now
     });
 
+    playResetGame();
     setActiveTab('table');
   };
 
@@ -436,6 +451,9 @@ export default function App() {
       lastSavedTime: now
     });
     setShowResetConfirm(false);
+
+    // Play subtle analog slide down sound for reset
+    playResetGame();
   };
 
 
@@ -457,13 +475,22 @@ export default function App() {
           </p>
         </div>
         
-        <div className="flex items-center sm:items-end justify-between sm:justify-start w-full sm:w-auto gap-6 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0">
+        <div className="flex items-center sm:items-end justify-between sm:justify-start w-full sm:w-auto gap-4 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0">
           <div className="text-left sm:text-right">
             <div className="text-[10px] uppercase tracking-widest text-editorial-muted mb-0.5 font-bold">Active Table</div>
             <div className="text-lg font-mono font-bold text-editorial-text" id="activeStatusDisplay">
               {status === 'setup' ? 'REGISTRATION' : `ROUND ${String(rounds.length + 1).padStart(2, '0')}`}
             </div>
           </div>
+
+          <button
+            onClick={toggleMute}
+            className="p-2.5 bg-transparent hover:bg-neutral-900 border border-editorial-border hover:border-editorial-gold/40 text-editorial-muted hover:text-editorial-gold rounded-xs transition-all cursor-pointer flex items-center justify-center"
+            title={isMuted ? "Unmute Sound Feedback" : "Mute Sound Feedback"}
+            id="sound-toggle-btn"
+          >
+            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 text-editorial-gold" />}
+          </button>
 
           {isAdmin && status !== 'setup' && (
             <button
@@ -674,7 +701,7 @@ export default function App() {
                     {lastAutoSavedTime && (
                       <span className="inline-flex items-center gap-1.5 text-[9px] font-mono text-[#dcae44] mt-2 bg-[#1c1914] border border-[#dcae44]/20 px-2 py-0.5 rounded-none" id="save-status-badge">
                         <span className={`w-1.5 h-1.5 rounded-full bg-editorial-gold ${isAutoSaving ? 'animate-ping' : 'animate-pulse'}`}></span>
-                        {isAutoSaving ? 'SESSION BACKUP LIVE...' : `Auto-saved locally: ${lastAutoSavedTime}`}
+                        {isAutoSaving ? 'SESSION BACKUP LIVE...' : `Synced to Firestore online: ${lastAutoSavedTime}`}
                       </span>
                     )}
                   </div>
@@ -725,8 +752,8 @@ export default function App() {
               ⚜️ {isAutoSaving ? 'Auto-saving Table state...' : lastAutoSavedTime ? `Tally saved at ${lastAutoSavedTime}` : 'Autosave Armed'}
             </span>
           )}
-          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-editorial-gold animate-pulse"></span> Local Storage Active</span>
-          <span>Cloud Sync Ready</span>
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Cloud Sync Live</span>
+          <span>Firebase Firestore Connected</span>
         </div>
       </footer>
 

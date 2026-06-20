@@ -69,7 +69,7 @@ export function ScoreBoard({ players, rounds, status, onEndGame, onResetGame, on
     const file = e.target.files?.[0];
     if (file && onUpdatePlayer) {
       if (file.size > 1500000) {
-        alert("This image is too large! Please upload an image under 1.5MB to preserve local club storage.");
+        alert("This image is too large! Please upload an image under 1.5MB to preserve cloud database storage limits.");
         return;
       }
       const reader = new FileReader();

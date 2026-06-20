@@ -400,7 +400,7 @@ export default function AdminPanel({
               </div>
 
               <p className="text-[10px] text-editorial-muted font-mono leading-relaxed uppercase">
-                ⚠️ All registry portraits, nickname links, scoreboard sessions, and the currently active game table are wiped instantly. Clear cached local storage keys.
+                ⚠️ All registry portraits, nickname links, scoreboard sessions, and the currently active game table are wiped instantly from Firestore cloud database.
               </p>
 
               <div className="flex gap-4 pt-2">
