@@ -11,7 +11,6 @@ interface AdminPanelProps {
   onResetAllClubhouseData: () => void;
   savedPlayers: Player[];
   games: SavedGame[];
-  adminPin?: string;
 }
 
 export default function AdminPanel({
@@ -21,10 +20,9 @@ export default function AdminPanel({
   onClearAllGameHistory,
   onResetAllClubhouseData,
   savedPlayers,
-  games,
-  adminPin
+  games
 }: AdminPanelProps) {
-  const DEFAULT_PIN = adminPin || '7908'; // New secure admin numeric PIN
+  const DEFAULT_PIN = '7908'; // New secure admin numeric PIN
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
   const [showSuccessToast, setShowSuccessToast] = useState(false);
@@ -400,7 +398,7 @@ export default function AdminPanel({
               </div>
 
               <p className="text-[10px] text-editorial-muted font-mono leading-relaxed uppercase">
-                ⚠️ All registry portraits, nickname links, scoreboard sessions, and the currently active game table are wiped instantly from Firestore cloud database.
+                ⚠️ All registry portraits, nickname links, scoreboard sessions, and the currently active game table are wiped instantly. Clear cached local storage keys.
               </p>
 
               <div className="flex gap-4 pt-2">

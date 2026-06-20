@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Player, Round, SavedGame } from './types';
 import { PlayerSetup } from './components/PlayerSetup';
 import ClubMembers from './components/ClubMembers';
@@ -9,11 +9,22 @@ import { RoundModal } from './components/RoundModal';
 import { HistoryTable } from './components/HistoryTable';
 import { GameHistory } from './components/GameHistory';
 import AdminPanel from './components/AdminPanel';
-import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield, Volume2, VolumeX } from 'lucide-react';
+import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, authenticateUser } from './lib/firebase';
-import { collection, doc, setDoc, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
-import { useAudioFeedback } from './hooks/useAudioFeedback';
+
+// Cloud Sync Connection
+import { db, handleFirestoreError, OperationType } from './lib/firebase';
+import {
+  doc,
+  collection,
+  setDoc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  deleteDoc,
+  getDocFromServer,
+  query
+} from 'firebase/firestore';
 
 function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): SavedGame[] {
   if (!rawHistory || rawHistory.length === 0 || !registry || registry.length === 0) return rawHistory || [];
@@ -101,150 +112,116 @@ export default function App() {
   // Cached names for fast loading on reuse
   const [savedPlayers, setSavedPlayers] = useState<Player[]>([]);
 
-  // Dynamically resolve and align active table players with their latest profile updates (name, nickname, avatars)
-  const activeTablePlayers = useMemo(() => {
-    return players.map((p) => {
-      const match = savedPlayers.find((sp) => sp.id === p.id);
-      if (match) {
-        return {
-          ...p,
-          name: match.name,
-          officialName: match.officialName,
-          nickname: match.nickname,
-          avatarUrl: match.avatarUrl
-        };
-      }
-      return p;
-    });
-  }, [players, savedPlayers]);
-
   // Auto-save tracker states
   const [lastAutoSavedTime, setLastAutoSavedTime] = useState<string | null>(null);
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false);
-  const [adminPin, setAdminPin] = useState<string>('7908');
-  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
 
-  // --- AUDIO FEEDBACK & SOUND CONTROLS ---
-  const { playRoundSaved, playResetGame } = useAudioFeedback();
-  const [isMuted, setIsMuted] = useState<boolean>(() => localStorage.getItem('clubhouse_sound_muted') === 'true');
-
-  const toggleMute = () => {
-    const nextVal = !isMuted;
-    setIsMuted(nextVal);
-    localStorage.setItem('clubhouse_sound_muted', String(nextVal));
+  // Helper for triggering cloud sync feedback animation
+  const triggerSyncVisual = () => {
+    setIsAutoSaving(true);
+    setTimeout(() => {
+      setIsAutoSaving(false);
+    }, 1200);
   };
 
-  // --- 1. IMPLICIT AUTHENTICATION INITIALIZER ---
+  // --- CONNECT & TEST FIRESTORE CONNECTION ON BOOT ---
   useEffect(() => {
-    let active = true;
-    authenticateUser().then(() => {
-      if (active) {
-        setIsAuthReady(true);
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'active_table', 'state'));
+        console.log("Firestore secure cloud connection verified.");
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
       }
-    });
-    return () => {
-      active = false;
-    };
+    }
+    testConnection();
   }, []);
 
-  // --- 2. INITIAL LOAD AND SNAPSHOT LISTENERS FROM FIREBASE ---
+  // --- REAL-TIME SNAPSHOT LISTENER FOR DIRECTORY (MEMBERS) ---
   useEffect(() => {
-    if (!isAuthReady) return;
-
-    // 1. Listen to active live table state
-    const tableDocRef = doc(db, 'live_table', 'current');
-    const unsubTable = onSnapshot(tableDocRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        if (data.players) setPlayers(data.players);
-        if (data.rounds) setRounds(data.rounds);
-        if (data.status) setStatus(data.status);
-        if (data.lastSavedTime) setLastAutoSavedTime(data.lastSavedTime);
-      } else {
-        // Initialize active table doc in Firestore on first-time setup
-        setDoc(tableDocRef, {
-          id: 'current',
-          players: [],
-          rounds: [],
-          status: 'setup',
-          lastSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        }).catch((err) => console.warn("Failed to seed current live table:", err));
-      }
-    }, (error) => {
-      console.warn("Table snapshot listener error:", error);
-    });
-
-    // 2. Listen to Club members
-    const membersColRef = collection(db, 'members');
-    const unsubMembers = onSnapshot(membersColRef, (snapshot) => {
-      const items: Player[] = [];
+    const unsubscribe = onSnapshot(collection(db, 'members'), (snapshot) => {
+      const list: Player[] = [];
       snapshot.forEach((doc) => {
-        items.push(doc.data() as Player);
+        list.push(doc.data() as Player);
       });
 
-      if (items.length === 0) {
-        // Seed initial default members
+      if (list.length === 0) {
+        // Seed database on first run with standard default members
         const DEFAULT_MEMBERS: Player[] = [
           { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
           { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
           { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
           { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
         ];
-        DEFAULT_MEMBERS.forEach((m) => {
-          setDoc(doc(db, 'members', m.id), m).catch((err) => console.warn("Failed to seed member:", m.id, err));
+        DEFAULT_MEMBERS.forEach((member) => {
+          setDoc(doc(db, 'members', member.id), member).catch((err) => {
+            handleFirestoreError(err, OperationType.WRITE, `members/${member.id}`);
+          });
         });
-        setSavedPlayers(DEFAULT_MEMBERS);
       } else {
-        setSavedPlayers(items);
+        setSavedPlayers(list);
       }
     }, (error) => {
-      console.warn("Members snapshot listener error:", error);
+      handleFirestoreError(error, OperationType.LIST, 'members');
     });
 
-    // 3. Listen to Games archive
-    const gamesColRef = collection(db, 'games');
-    const unsubGames = onSnapshot(gamesColRef, (snapshot) => {
-      const gameEntries: SavedGame[] = [];
-      snapshot.forEach((doc) => {
-        gameEntries.push(doc.data() as SavedGame);
+    return () => unsubscribe();
+  }, []);
+
+  // --- REAL-TIME SNAPSHOT LISTENER FOR HISTORICAL GAMES ---
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'games'), (snapshot) => {
+      const list: SavedGame[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push(docSnap.data() as SavedGame);
       });
-      // Sort desc by date
-      gameEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      setHistory(gameEntries);
+
+      // Sort by date descending (newest games first)
+      list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      
+      // Update our history with the normalized data
+      setHistory(normalizeAndMergeHistory(list, savedPlayers));
     }, (error) => {
-      console.warn("Games snapshot listener error:", error);
+      handleFirestoreError(error, OperationType.LIST, 'games');
     });
 
-    // 4. Listen to Admin Settings
-    const settingsDocRef = doc(db, 'settings', 'global');
-    const unsubSettings = onSnapshot(settingsDocRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        if (data.adminPin) {
-          setAdminPin(data.adminPin);
-        }
+    return () => unsubscribe();
+  }, [savedPlayers]);
+
+  // --- REAL-TIME SNAPSHOT LISTENER FOR ACTIVE PLAYING TABLE STATE ---
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'active_table', 'state'), (docSnapshot) => {
+      if (docSnapshot.exists()) {
+        const data = docSnapshot.data();
+        setPlayers(data.players || []);
+        setRounds(data.rounds || []);
+        setStatus(data.status || 'setup');
+        setLastAutoSavedTime(data.lastAutoSavedTime || null);
       } else {
-        // Seed default settings
-        setDoc(settingsDocRef, {
-          id: 'global',
-          adminPin: '7908'
-        }).catch((err) => console.warn("Failed to seed global settings:", err));
-        setAdminPin('7908');
+        // Create initial empty setup state document
+        setDoc(doc(db, 'active_table', 'state'), {
+          players: [],
+          rounds: [],
+          status: 'setup',
+          lastAutoSavedTime: null,
+        }).catch((err) => {
+          handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+        });
       }
     }, (error) => {
-      console.warn("Settings snapshot listener error:", error);
+      handleFirestoreError(error, OperationType.GET, 'active_table/state');
     });
 
-    return () => {
-      unsubTable();
-      unsubMembers();
-      unsubGames();
-      unsubSettings();
-    };
-  }, [isAuthReady]);
+    return () => unsubscribe();
+  }, []);
 
   // --- ACTIONS ---
   const handleStartGame = async (newPlayers: Player[]) => {
+    triggerSyncVisual();
+    setActiveTab('table'); // Move view focus automatically to the active board
+
     // Resolve canonical profiles synchronously using the CURRENT savedPlayers state
     const canonicalPlayers = newPlayers.map((p) => {
       const existing = savedPlayers.find((m) => {
@@ -272,76 +249,106 @@ export default function App() {
       return p;
     });
 
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    
-    // Save live table state to Firestore
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players: canonicalPlayers,
-      rounds: [],
-      status: 'playing',
-      lastSavedTime: now
-    });
+    try {
+      // 1. Save active table playing setup to Firestore
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      await setDoc(doc(db, 'active_table', 'state'), {
+        players: canonicalPlayers,
+        rounds: [],
+        status: 'playing',
+        lastAutoSavedTime: nowTime,
+      });
 
-    // Write anyone missing or updated profile to members collection
-    canonicalPlayers.forEach(async (cp) => {
-      await setDoc(doc(db, 'members', cp.id), cp);
-    });
-
-    setActiveTab('table'); // Move view focus automatically to the active board
+      // 2. Add CP to the clubhouse directory database if new or updated
+      for (const cp of canonicalPlayers) {
+        const existingMember = savedPlayers.find(item => item.id === cp.id);
+        if (!existingMember || JSON.stringify(existingMember) !== JSON.stringify(cp)) {
+          await setDoc(doc(db, 'members', cp.id), cp);
+        }
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    }
   };
 
   const handleUpdatePlayer = async (updatedPlayer: Player) => {
-    await setDoc(doc(db, 'members', updatedPlayer.id), updatedPlayer);
+    triggerSyncVisual();
+    try {
+      // 1. Update directory collection
+      await setDoc(doc(db, 'members', updatedPlayer.id), updatedPlayer);
+
+      // 2. If present on the active table playing roster, update there too
+      const activeIdx = players.findIndex(p => p.id === updatedPlayer.id);
+      if (activeIdx !== -1) {
+        const updatedActivePlayers = players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
+        await setDoc(doc(db, 'active_table', 'state'), {
+          players: updatedActivePlayers,
+          rounds,
+          status,
+          lastAutoSavedTime,
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `members/${updatedPlayer.id}`);
+    }
   };
 
   const handleAddClubPlayer = async (p: Player) => {
-    await setDoc(doc(db, 'members', p.id), p);
+    triggerSyncVisual();
+    try {
+      await setDoc(doc(db, 'members', p.id), p);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `members/${p.id}`);
+    }
   };
 
   const handleDeleteClubPlayer = async (playerIdToRemove: string) => {
-    await deleteDoc(doc(db, 'members', playerIdToRemove));
-    
-    // Check if deleted player is currently sitting at the active game table
-    const isSittingAtTable = players.some((p) => p.id === playerIdToRemove);
-    if (isSittingAtTable) {
-      // ONLY update live table in Firestore to setup state if the deleted member was actually at the table!
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      await setDoc(doc(db, 'live_table', 'current'), {
-        id: 'current',
-        players: [],
-        rounds: [],
-        status: 'setup',
-        lastSavedTime: now
-      });
+    triggerSyncVisual();
+    try {
+      // 1. Delete member from members collection
+      await deleteDoc(doc(db, 'members', playerIdToRemove));
+      
+      // 2. Reset active table settings if the player was active
+      const isActive = players.some(p => p.id === playerIdToRemove);
+      if (isActive) {
+        await setDoc(doc(db, 'active_table', 'state'), {
+          players: [],
+          rounds: [],
+          status: 'setup',
+          lastAutoSavedTime: null,
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `members/${playerIdToRemove}`);
     }
   };
 
   const handleSaveRound = async (roundScores: Record<string, number>) => {
-    let nextRounds = [...rounds];
-    if (editingRound) {
-      nextRounds = nextRounds.map(r => r.roundNumber === editingRound.roundNumber ? { ...r, scores: roundScores } : r);
-      setEditingRound(null);
-    } else {
-      const nextNum = rounds.length + 1;
-      const newRound: Round = {
-        roundNumber: nextNum,
-        scores: roundScores
-      };
-      nextRounds.push(newRound);
+    triggerSyncVisual();
+    try {
+      let nextRounds = [...rounds];
+      if (editingRound) {
+        nextRounds = rounds.map(r => r.roundNumber === editingRound.roundNumber ? { ...r, scores: roundScores } : r);
+        setEditingRound(null);
+      } else {
+        const nextNum = rounds.length + 1;
+        const newRound: Round = {
+          roundNumber: nextNum,
+          scores: roundScores
+        };
+        nextRounds = [...rounds, newRound];
+      }
+
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      await setDoc(doc(db, 'active_table', 'state'), {
+        players,
+        rounds: nextRounds,
+        status,
+        lastAutoSavedTime: nowTime,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
     }
-
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players,
-      rounds: nextRounds,
-      status,
-      lastSavedTime: now
-    });
-
-    // Play subtle success sound chime
-    playRoundSaved();
   };
 
   const handleEditRound = (round: Round) => {
@@ -351,21 +358,24 @@ export default function App() {
 
   const handleUndoLastRound = async () => {
     if (rounds.length === 0) return;
-    const nextRounds = rounds.slice(0, rounds.length - 1);
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players,
-      rounds: nextRounds,
-      status,
-      lastSavedTime: now
-    });
+    triggerSyncVisual();
+    try {
+      const nextRounds = rounds.slice(0, rounds.length - 1);
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      await setDoc(doc(db, 'active_table', 'state'), {
+        players,
+        rounds: nextRounds,
+        status,
+        lastAutoSavedTime: nowTime,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    }
   };
 
   const handleEndGameStatus = async () => {
+    triggerSyncVisual();
     if (rounds.length > 0 && players.length > 0) {
-      // 1. Calculate final standings for automatic archive save
       const standings = players.map((player) => {
         const total = rounds.reduce((sum, r) => sum + (r.scores[player.id] || 0), 0);
         return { ...player, total };
@@ -373,77 +383,104 @@ export default function App() {
 
       const winnerName = standings[0] ? standings[0].name : 'Unknown Player';
 
-      // 2. Draft SavedGame object
-      const gameId = `game-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
       const newArchivedGame: SavedGame = {
-        id: gameId,
+        id: `game-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         players: [...players],
         rounds: [...rounds],
         date: new Date().toISOString(),
         winnerName
       };
 
-      // 3. Store in Firestore Games collection
-      await setDoc(doc(db, 'games', gameId), newArchivedGame);
+      try {
+        // Save matching logs in permanent directory
+        await setDoc(doc(db, 'games', newArchivedGame.id), newArchivedGame);
+        
+        // Terminate status of active table
+        await setDoc(doc(db, 'active_table', 'state'), {
+          players,
+          rounds,
+          status: 'ended',
+          lastAutoSavedTime,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `games/${newArchivedGame.id}`);
+      }
+    } else {
+      try {
+        await setDoc(doc(db, 'active_table', 'state'), {
+          players,
+          rounds,
+          status: 'ended',
+          lastAutoSavedTime,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+      }
     }
-
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players,
-      rounds,
-      status: 'ended',
-      lastSavedTime: now
-    });
   };
 
   const handleClearHistory = async () => {
-    // Delete each game from Firestore
-    history.forEach(async (g) => {
-      await deleteDoc(doc(db, 'games', g.id));
-    });
+    triggerSyncVisual();
+    try {
+      const snapshot = await getDocs(collection(db, 'games'));
+      for (const gameDoc of snapshot.docs) {
+        await deleteDoc(doc(db, 'games', gameDoc.id));
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'games');
+    }
   };
 
   const handleResetAllClubhouseData = async () => {
-    // 1. Delete all saved games
-    history.forEach(async (g) => {
-      await deleteDoc(doc(db, 'games', g.id));
-    });
-
-    // 2. Clear out existing members and seed defaults
+    triggerSyncVisual();
     const DEFAULT_MEMBERS: Player[] = [
       { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
       { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
       { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
       { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
     ];
-    // Delete existing savedPlayers from Firestore
-    savedPlayers.forEach(async (m) => {
-      await deleteDoc(doc(db, 'members', m.id));
-    });
-    DEFAULT_MEMBERS.forEach(async (m) => {
-      await setDoc(doc(db, 'members', m.id), m);
-    });
 
-    // 3. Reset table
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players: [],
-      rounds: [],
-      status: 'setup',
-      lastSavedTime: now
-    });
+    try {
+      // 1. Reset setup active table
+      await setDoc(doc(db, 'active_table', 'state'), {
+        players: [],
+        rounds: [],
+        status: 'setup',
+        lastAutoSavedTime: null,
+      });
 
-    playResetGame();
-    setActiveTab('table');
+      // 2. Clear out all members and restore defaulted seed members
+      const membersSnapshot = await getDocs(collection(db, 'members'));
+      for (const mDoc of membersSnapshot.docs) {
+        await deleteDoc(doc(db, 'members', mDoc.id));
+      }
+      for (const m of DEFAULT_MEMBERS) {
+        await setDoc(doc(db, 'members', m.id), m);
+      }
+
+      // 3. Clear games directory
+      const gamesSnapshot = await getDocs(collection(db, 'games'));
+      for (const gDoc of gamesSnapshot.docs) {
+        await deleteDoc(doc(db, 'games', gDoc.id));
+      }
+
+      setActiveTab('table');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'reset_all');
+    }
   };
 
   const handleDeleteGame = async (gameId: string) => {
-    await deleteDoc(doc(db, 'games', gameId));
+    triggerSyncVisual();
+    try {
+      await deleteDoc(doc(db, 'games', gameId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `games/${gameId}`);
+    }
   };
 
   const handleUpdateCompletedGame = async (updatedGame: SavedGame) => {
+    triggerSyncVisual();
     const standings = updatedGame.players.map((p) => {
       const total = updatedGame.rounds.reduce((sum, r) => sum + (r.scores[p.id] || 0), 0);
       return { ...p, total };
@@ -455,7 +492,11 @@ export default function App() {
       winnerName
     };
 
-    await setDoc(doc(db, 'games', updatedGame.id), nextGame);
+    try {
+      await setDoc(doc(db, 'games', updatedGame.id), nextGame);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `games/${updatedGame.id}`);
+    }
   };
 
   const triggerResetPrompt = () => {
@@ -463,19 +504,20 @@ export default function App() {
   };
 
   const confirmResetGame = async () => {
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players: [],
-      rounds: [],
-      status: 'setup',
-      lastSavedTime: now
-    });
-    setShowResetConfirm(false);
-
-    // Play subtle analog slide down sound for reset
-    playResetGame();
+    triggerSyncVisual();
+    try {
+      await setDoc(doc(db, 'active_table', 'state'), {
+        players: [],
+        rounds: [],
+        status: 'setup',
+        lastAutoSavedTime: null,
+      });
+      setShowResetConfirm(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    }
   };
+
 
 
   return (
@@ -496,22 +538,13 @@ export default function App() {
           </p>
         </div>
         
-        <div className="flex items-center sm:items-end justify-between sm:justify-start w-full sm:w-auto gap-4 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0">
+        <div className="flex items-center sm:items-end justify-between sm:justify-start w-full sm:w-auto gap-6 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0">
           <div className="text-left sm:text-right">
             <div className="text-[10px] uppercase tracking-widest text-editorial-muted mb-0.5 font-bold">Active Table</div>
             <div className="text-lg font-mono font-bold text-editorial-text" id="activeStatusDisplay">
               {status === 'setup' ? 'REGISTRATION' : `ROUND ${String(rounds.length + 1).padStart(2, '0')}`}
             </div>
           </div>
-
-          <button
-            onClick={toggleMute}
-            className="p-2.5 bg-transparent hover:bg-neutral-900 border border-editorial-border hover:border-editorial-gold/40 text-editorial-muted hover:text-editorial-gold rounded-xs transition-all cursor-pointer flex items-center justify-center"
-            title={isMuted ? "Unmute Sound Feedback" : "Mute Sound Feedback"}
-            id="sound-toggle-btn"
-          >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 text-editorial-gold" />}
-          </button>
 
           {isAdmin && status !== 'setup' && (
             <button
@@ -675,7 +708,6 @@ export default function App() {
                 onResetAllClubhouseData={handleResetAllClubhouseData}
                 savedPlayers={savedPlayers}
                 games={history}
-                adminPin={adminPin}
               />
             </motion.div>
           ) : status === 'setup' ? (
@@ -722,7 +754,7 @@ export default function App() {
                     {lastAutoSavedTime && (
                       <span className="inline-flex items-center gap-1.5 text-[9px] font-mono text-[#dcae44] mt-2 bg-[#1c1914] border border-[#dcae44]/20 px-2 py-0.5 rounded-none" id="save-status-badge">
                         <span className={`w-1.5 h-1.5 rounded-full bg-editorial-gold ${isAutoSaving ? 'animate-ping' : 'animate-pulse'}`}></span>
-                        {isAutoSaving ? 'SESSION BACKUP LIVE...' : `Synced to Firestore online: ${lastAutoSavedTime}`}
+                        {isAutoSaving ? 'SESSION BACKUP LIVE...' : `Auto-saved locally: ${lastAutoSavedTime}`}
                       </span>
                     )}
                   </div>
@@ -739,7 +771,7 @@ export default function App() {
 
               {/* ScoreBoard Standing List */}
               <ScoreBoard
-                players={activeTablePlayers}
+                players={players}
                 rounds={rounds}
                 status={status}
                 onEndGame={() => setShowEndGameConfirm(true)}
@@ -750,7 +782,7 @@ export default function App() {
 
               {/* Round History Grid Ledger */}
               <HistoryTable
-                players={activeTablePlayers}
+                players={players}
                 rounds={rounds}
                 onUndoLastRound={handleUndoLastRound}
                 onEditRound={handleEditRound}
@@ -773,8 +805,8 @@ export default function App() {
               ⚜️ {isAutoSaving ? 'Auto-saving Table state...' : lastAutoSavedTime ? `Tally saved at ${lastAutoSavedTime}` : 'Autosave Armed'}
             </span>
           )}
-          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Cloud Sync Live</span>
-          <span>Firebase Firestore Connected</span>
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-editorial-gold animate-pulse"></span> Cloud Storage Active</span>
+          <span>Real-time Sync Active</span>
         </div>
       </footer>
 
@@ -785,7 +817,7 @@ export default function App() {
           setIsRoundModalOpen(false);
           setEditingRound(null);
         }}
-        players={activeTablePlayers}
+        players={players}
         roundNumber={editingRound ? editingRound.roundNumber : rounds.length + 1}
         onSaveRound={handleSaveRound}
         initialScores={editingRound ? editingRound.scores : undefined}
