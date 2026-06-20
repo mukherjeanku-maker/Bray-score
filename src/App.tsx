@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Player, Round, SavedGame } from './types';
 import { PlayerSetup } from './components/PlayerSetup';
 import ClubMembers from './components/ClubMembers';
@@ -100,6 +100,23 @@ export default function App() {
 
   // Cached names for fast loading on reuse
   const [savedPlayers, setSavedPlayers] = useState<Player[]>([]);
+
+  // Dynamically resolve and align active table players with their latest profile updates (name, nickname, avatars)
+  const activeTablePlayers = useMemo(() => {
+    return players.map((p) => {
+      const match = savedPlayers.find((sp) => sp.id === p.id);
+      if (match) {
+        return {
+          ...p,
+          name: match.name,
+          officialName: match.officialName,
+          nickname: match.nickname,
+          avatarUrl: match.avatarUrl
+        };
+      }
+      return p;
+    });
+  }, [players, savedPlayers]);
 
   // Auto-save tracker states
   const [lastAutoSavedTime, setLastAutoSavedTime] = useState<string | null>(null);
@@ -285,15 +302,19 @@ export default function App() {
   const handleDeleteClubPlayer = async (playerIdToRemove: string) => {
     await deleteDoc(doc(db, 'members', playerIdToRemove));
     
-    // Update live table in Firestore to setup state
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    await setDoc(doc(db, 'live_table', 'current'), {
-      id: 'current',
-      players: [],
-      rounds: [],
-      status: 'setup',
-      lastSavedTime: now
-    });
+    // Check if deleted player is currently sitting at the active game table
+    const isSittingAtTable = players.some((p) => p.id === playerIdToRemove);
+    if (isSittingAtTable) {
+      // ONLY update live table in Firestore to setup state if the deleted member was actually at the table!
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      await setDoc(doc(db, 'live_table', 'current'), {
+        id: 'current',
+        players: [],
+        rounds: [],
+        status: 'setup',
+        lastSavedTime: now
+      });
+    }
   };
 
   const handleSaveRound = async (roundScores: Record<string, number>) => {
@@ -718,7 +739,7 @@ export default function App() {
 
               {/* ScoreBoard Standing List */}
               <ScoreBoard
-                players={players}
+                players={activeTablePlayers}
                 rounds={rounds}
                 status={status}
                 onEndGame={() => setShowEndGameConfirm(true)}
@@ -729,7 +750,7 @@ export default function App() {
 
               {/* Round History Grid Ledger */}
               <HistoryTable
-                players={players}
+                players={activeTablePlayers}
                 rounds={rounds}
                 onUndoLastRound={handleUndoLastRound}
                 onEditRound={handleEditRound}
@@ -764,7 +785,7 @@ export default function App() {
           setIsRoundModalOpen(false);
           setEditingRound(null);
         }}
-        players={players}
+        players={activeTablePlayers}
         roundNumber={editingRound ? editingRound.roundNumber : rounds.length + 1}
         onSaveRound={handleSaveRound}
         initialScores={editingRound ? editingRound.scores : undefined}

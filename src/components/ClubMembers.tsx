@@ -180,27 +180,38 @@ export default function ClubMembers({
     let appearances = 0;
     let wins = 0;
 
-    games.forEach(game => {
+    // Safety fallback
+    const targetOfficial = (pOfficial || pName || '').toLowerCase().trim();
+    const targetNick = (pNick || '').toLowerCase().trim();
+
+    (games || []).forEach(game => {
+      if (!game || !game.players) return;
+
       // Find if player was in this game
-      const inGame = game.players.some(gp => 
-        gp.id === pId ||
-        gp.officialName.toLowerCase().trim() === pOfficial.toLowerCase().trim() ||
-        (pNick && gp.nickname && gp.nickname.toLowerCase().trim() === pNick.toLowerCase().trim())
-      );
+      const inGame = game.players.some(gp => {
+        if (!gp) return false;
+        const gpId = gp.id;
+        const gpOfficial = (gp.officialName || gp.name || '').toLowerCase().trim();
+        const gpNick = (gp.nickname || '').toLowerCase().trim();
+
+        return (
+          (gpId && gpId === pId) ||
+          (gpOfficial && targetOfficial && gpOfficial === targetOfficial) ||
+          (targetNick && gpNick && gpNick === targetNick)
+        );
+      });
 
       if (inGame) {
         appearances++;
-        // Winner is calculated as lowest score or matches the winnerName property
-        // Let's check matches
+        // Winner matches the winnerName property
         const matchesWinnerName = (game.winnerName || '').toLowerCase().trim();
-        const displayOption = (pNick || pOfficial).toLowerCase().trim();
-        const checkOfficial = pOfficial.toLowerCase().trim();
-        const checkNick = (pNick || '').toLowerCase().trim();
+        const displayOption = (targetNick || targetOfficial).toLowerCase().trim();
 
         if (
-          matchesWinnerName === displayOption ||
-          matchesWinnerName === checkOfficial ||
-          (checkNick && matchesWinnerName === checkNick)
+          matchesWinnerName &&
+          (matchesWinnerName === displayOption ||
+           matchesWinnerName === targetOfficial ||
+           (targetNick && matchesWinnerName === targetNick))
         ) {
           wins++;
         }
