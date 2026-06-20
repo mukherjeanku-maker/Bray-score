@@ -1,0 +1,9 @@
+# Rules to prevent Git from corrupting binary assets with line-ending conversions
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.mp3 binary
+*.wav binary
