@@ -2,111 +2,65 @@
   "entities": {
     "Player": {
       "title": "Player",
-      "description": "A registered clubhouse member or temporary player profile.",
+      "description": "Club member or guest playing at the card table",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique profile ID"
-        },
-        "name": {
-          "type": "string",
-          "description": "Display name"
-        },
-        "officialName": {
-          "type": "string",
-          "description": "Official name on register"
-        },
-        "nickname": {
-          "type": "string",
-          "description": "Optional short name"
-        },
-        "avatarUrl": {
-          "type": "string",
-          "description": "Optional avatar image URL or Data URL"
-        }
+        "id": { "type": "string", "description": "Unique profile ID" },
+        "name": { "type": "string", "description": "Display name" },
+        "officialName": { "type": "string", "description": "Official legal name" },
+        "nickname": { "type": "string", "description": "Member nickname" },
+        "avatarUrl": { "type": "string", "description": "Avatar base64 or URL" }
       },
       "required": ["id", "name", "officialName"]
     },
     "Round": {
       "title": "Round",
-      "description": "Scores registered for each active player in a game round.",
+      "description": "Scoring round details",
       "type": "object",
       "properties": {
-        "roundNumber": {
-          "type": "integer"
-        },
-        "scores": {
-          "type": "object",
-          "description": "A map of playerId to numerical score"
-        }
+        "roundNumber": { "type": "integer" },
+        "scores": { "type": "object", "description": "Map of player ID to score in this round" }
       },
       "required": ["roundNumber", "scores"]
     },
-    "SavedGame": {
-      "title": "SavedGame",
-      "description": "A historical archived card match record.",
+    "CompletedGame": {
+      "title": "CompletedGame",
+      "description": "A historic completed card game session",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string"
-        },
-        "players": {
-          "type": "array",
-          "items": { "type": "object" }
-        },
-        "rounds": {
-          "type": "array",
-          "items": { "type": "object" }
-        },
-        "date": {
-          "type": "string"
-        },
-        "winnerName": {
-          "type": "string"
-        }
+        "id": { "type": "string" },
+        "players": { "type": "array", "description": "List of players in their final states" },
+        "rounds": { "type": "array", "description": "Rounds and scores played in the game" },
+        "date": { "type": "string", "format": "date-time" },
+        "winnerName": { "type": "string" }
       },
       "required": ["id", "players", "rounds", "date", "winnerName"]
     },
-    "ActiveTable": {
-      "title": "ActiveTable",
-      "description": "The current live active card table state playing in the clubhouse.",
+    "ActiveSession": {
+      "title": "ActiveSession",
+      "description": "The current live status of the active card table",
       "type": "object",
       "properties": {
-        "players": {
-          "type": "array",
-          "items": { "type": "object" }
-        },
-        "rounds": {
-          "type": "array",
-          "items": { "type": "object" }
-        },
-        "status": {
-          "type": "string",
-          "enum": ["setup", "playing", "ended"]
-        },
-        "lastAutoSavedTime": {
-          "type": "string"
-        },
-        "updatedAt": {
-          "type": "string"
-        }
+        "players": { "type": "array" },
+        "rounds": { "type": "array" },
+        "status": { "type": "string", "enum": ["setup", "playing", "ended"] },
+        "lastAutoSavedTime": { "type": "string" }
       },
       "required": ["players", "rounds", "status"]
     }
   },
   "firestore": {
-    "members/{memberId}": {
+    "players/{playerId}": {
       "schema": "Player",
-      "description": "Active club directory database profiles."
+      "description": "Permanent directory of club members"
     },
-    "games/{gameId}": {
-      "schema": "SavedGame",
-      "description": "Match history archive of completed hands."
+    "history/{gameId}": {
+      "schema": "CompletedGame",
+      "description": "Completed games archive logs"
     },
-    "active_table/{docId}": {
-      "schema": "ActiveTable",
-      "description": "Single-document storage sync of the current live play sessions."
+    "activeSession/current": {
+      "schema": "ActiveSession",
+      "description": "The current live session of the active card table"
     }
   }
 }

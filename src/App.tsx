@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Player, Round, SavedGame } from './types';
 import { PlayerSetup } from './components/PlayerSetup';
 import ClubMembers from './components/ClubMembers';
@@ -11,20 +11,9 @@ import { GameHistory } from './components/GameHistory';
 import AdminPanel from './components/AdminPanel';
 import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, Save, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-
-// Cloud Sync Connection
-import { db, handleFirestoreError, OperationType } from './lib/firebase';
-import {
-  doc,
-  collection,
-  setDoc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  deleteDoc,
-  getDocFromServer,
-  query
-} from 'firebase/firestore';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, doc, setDoc, deleteDoc, getDocs, onSnapshot } from 'firebase/firestore';
+import { db, auth, signInWithGoogle, signInGuest, logoutUser, handleFirestoreError, OperationType } from './lib/firebase';
 
 function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): SavedGame[] {
   if (!rawHistory || rawHistory.length === 0 || !registry || registry.length === 0) return rawHistory || [];
@@ -93,6 +82,35 @@ function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): 
 }
 
 export default function App() {
+  // --- AUTHENTICATION STATE ---
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const handleGoogleSignIn = async () => {
+    setAuthError(null);
+    try {
+      await signInWithGoogle();
+    } catch (err: any) {
+      console.error("Google sign in error in App:", err);
+      if (err.code === 'auth/popup-closed-by-user' || err.message?.includes('popup-closed-by-user')) {
+        setAuthError("Popup was closed or blocked. Click again to sign-in, or use Guest Access below if you are in a sandboxed preview frame.");
+      } else {
+        setAuthError(err.message || String(err));
+      }
+    }
+  };
+
+  const handleGuestSignIn = async () => {
+    setAuthError(null);
+    try {
+      await signInGuest();
+    } catch (err: any) {
+      console.error("Guest sign in error in App:", err);
+      setAuthError("Guest Access failed: " + (err.message || String(err)));
+    }
+  };
+
   // --- STATE ---
   const [players, setPlayers] = useState<Player[]>([]);
   const [rounds, setRounds] = useState<Round[]>([]);
@@ -116,113 +134,119 @@ export default function App() {
   const [lastAutoSavedTime, setLastAutoSavedTime] = useState<string | null>(null);
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false);
 
-  // Helper for triggering cloud sync feedback animation
-  const triggerSyncVisual = () => {
-    setIsAutoSaving(true);
-    setTimeout(() => {
-      setIsAutoSaving(false);
-    }, 1200);
-  };
-
-  // --- CONNECT & TEST FIRESTORE CONNECTION ON BOOT ---
+  // --- MONITORS AUTH STATE CHANGE ---
   useEffect(() => {
-    async function testConnection() {
-      try {
-        await getDocFromServer(doc(db, 'active_table', 'state'));
-        console.log("Firestore secure cloud connection verified.");
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthLoading(false);
+      
+      // Auto upgrade primary runtime user to administrator role
+      if (user) {
+        const isEmailAdmin = user.email === 'mukherjeanku@gmail.com';
+        setIsAdmin(isEmailAdmin);
+      } else {
+        setIsAdmin(false);
       }
-    }
-    testConnection();
+    });
+    return () => unsubscribe();
   }, []);
 
-  // --- REAL-TIME SNAPSHOT LISTENER FOR DIRECTORY (MEMBERS) ---
+  // --- CLOUD FIRESTORE SYNC: PLAYERS DIRECTORY ---
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'members'), (snapshot) => {
+    if (!currentUser) return;
+
+    const playersRef = collection(db, 'players');
+    const unsubscribe = onSnapshot(playersRef, (snapshot) => {
       const list: Player[] = [];
       snapshot.forEach((doc) => {
         list.push(doc.data() as Player);
       });
 
+      // Seeding database with initial custom mock directory if totally empty
       if (list.length === 0) {
-        // Seed database on first run with standard default members
         const DEFAULT_MEMBERS: Player[] = [
           { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
           { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
           { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
           { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
         ];
-        DEFAULT_MEMBERS.forEach((member) => {
-          setDoc(doc(db, 'members', member.id), member).catch((err) => {
-            handleFirestoreError(err, OperationType.WRITE, `members/${member.id}`);
-          });
+        DEFAULT_MEMBERS.forEach(async (p) => {
+          try {
+            await setDoc(doc(db, 'players', p.id), p);
+          } catch (e) {
+            handleFirestoreError(e, OperationType.WRITE, `players/${p.id}`);
+          }
         });
       } else {
         setSavedPlayers(list);
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'members');
+      handleFirestoreError(error, OperationType.GET, 'players');
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [currentUser]);
 
-  // --- REAL-TIME SNAPSHOT LISTENER FOR HISTORICAL GAMES ---
+  // --- CLOUD FIRESTORE SYNC: HISTORIC MATCH LOGS ---
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'games'), (snapshot) => {
-      const list: SavedGame[] = [];
-      snapshot.forEach((docSnap) => {
-        list.push(docSnap.data() as SavedGame);
-      });
+    if (!currentUser) return;
 
-      // Sort by date descending (newest games first)
+    const historyRef = collection(db, 'history');
+    const unsubscribe = onSnapshot(historyRef, (snapshot) => {
+      const list: SavedGame[] = [];
+      snapshot.forEach((doc) => {
+        list.push(doc.data() as SavedGame);
+      });
       list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       
-      // Update our history with the normalized data
-      setHistory(normalizeAndMergeHistory(list, savedPlayers));
+      const normalized = normalizeAndMergeHistory(list, savedPlayers);
+      setHistory(normalized);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'games');
+      handleFirestoreError(error, OperationType.GET, 'history');
     });
 
     return () => unsubscribe();
-  }, [savedPlayers]);
+  }, [currentUser, savedPlayers]);
 
-  // --- REAL-TIME SNAPSHOT LISTENER FOR ACTIVE PLAYING TABLE STATE ---
+  // --- CLOUD FIRESTORE SYNC: ACTIVE CARD TABLE SESSION ---
   useEffect(() => {
-    const unsubscribe = onSnapshot(doc(db, 'active_table', 'state'), (docSnapshot) => {
-      if (docSnapshot.exists()) {
-        const data = docSnapshot.data();
+    if (!currentUser) return;
+
+    const activeSessionRef = doc(db, 'activeSession', 'current');
+    const unsubscribe = onSnapshot(activeSessionRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
         setPlayers(data.players || []);
         setRounds(data.rounds || []);
         setStatus(data.status || 'setup');
-        setLastAutoSavedTime(data.lastAutoSavedTime || null);
+        if (data.lastAutoSavedTime) {
+          setLastAutoSavedTime(data.lastAutoSavedTime);
+        }
       } else {
-        // Create initial empty setup state document
-        setDoc(doc(db, 'active_table', 'state'), {
-          players: [],
-          rounds: [],
-          status: 'setup',
-          lastAutoSavedTime: null,
-        }).catch((err) => {
-          handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
-        });
+        // Initialize current activeSession doc
+        try {
+          setDoc(activeSessionRef, {
+            players: [],
+            rounds: [],
+            status: 'setup'
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
+        }
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'active_table/state');
+      handleFirestoreError(error, OperationType.GET, 'activeSession/current');
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [currentUser]);
 
-  // --- ACTIONS ---
+
+  // --- FIRESTORE DIRECT WRITE ACTIONS ---
   const handleStartGame = async (newPlayers: Player[]) => {
-    triggerSyncVisual();
-    setActiveTab('table'); // Move view focus automatically to the active board
+    setActiveTab('table');
 
-    // Resolve canonical profiles synchronously using the CURRENT savedPlayers state
+    // Resolve canonical profiles using cloud directory state
     const canonicalPlayers = newPlayers.map((p) => {
       const existing = savedPlayers.find((m) => {
         if (m.id === p.id) return true;
@@ -249,105 +273,105 @@ export default function App() {
       return p;
     });
 
+    // Write start card table status to Cloud Firestore
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     try {
-      // 1. Save active table playing setup to Firestore
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      await setDoc(doc(db, 'active_table', 'state'), {
+      await setDoc(doc(db, 'activeSession', 'current'), {
         players: canonicalPlayers,
         rounds: [],
         status: 'playing',
-        lastAutoSavedTime: nowTime,
+        lastAutoSavedTime: timeStr
       });
-
-      // 2. Add CP to the clubhouse directory database if new or updated
-      for (const cp of canonicalPlayers) {
-        const existingMember = savedPlayers.find(item => item.id === cp.id);
-        if (!existingMember || JSON.stringify(existingMember) !== JSON.stringify(cp)) {
-          await setDoc(doc(db, 'members', cp.id), cp);
-        }
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
+
+    // Save profile attributes updates directly in cloud players directory
+    canonicalPlayers.forEach(async (cp) => {
+      try {
+        await setDoc(doc(db, 'players', cp.id), cp);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `players/${cp.id}`);
+      }
+    });
   };
 
   const handleUpdatePlayer = async (updatedPlayer: Player) => {
-    triggerSyncVisual();
     try {
-      // 1. Update directory collection
-      await setDoc(doc(db, 'members', updatedPlayer.id), updatedPlayer);
+      await setDoc(doc(db, 'players', updatedPlayer.id), updatedPlayer);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `players/${updatedPlayer.id}`);
+    }
 
-      // 2. If present on the active table playing roster, update there too
-      const activeIdx = players.findIndex(p => p.id === updatedPlayer.id);
-      if (activeIdx !== -1) {
-        const updatedActivePlayers = players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
-        await setDoc(doc(db, 'active_table', 'state'), {
+    // Hot-update players in-seat if they are currently sitting at the active table
+    if (status !== 'setup') {
+      const updatedActivePlayers = players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
+      try {
+        await setDoc(doc(db, 'activeSession', 'current'), {
           players: updatedActivePlayers,
           rounds,
           status,
-          lastAutoSavedTime,
+          lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
       }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `members/${updatedPlayer.id}`);
     }
   };
 
   const handleAddClubPlayer = async (p: Player) => {
-    triggerSyncVisual();
     try {
-      await setDoc(doc(db, 'members', p.id), p);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `members/${p.id}`);
+      await setDoc(doc(db, 'players', p.id), p);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `players/${p.id}`);
     }
   };
 
   const handleDeleteClubPlayer = async (playerIdToRemove: string) => {
-    triggerSyncVisual();
     try {
-      // 1. Delete member from members collection
-      await deleteDoc(doc(db, 'members', playerIdToRemove));
-      
-      // 2. Reset active table settings if the player was active
-      const isActive = players.some(p => p.id === playerIdToRemove);
-      if (isActive) {
-        await setDoc(doc(db, 'active_table', 'state'), {
+      await deleteDoc(doc(db, 'players', playerIdToRemove));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `players/${playerIdToRemove}`);
+    }
+
+    // Reset table setup if a seated player profile was deleted
+    if (players.some(p => p.id === playerIdToRemove)) {
+      try {
+        await setDoc(doc(db, 'activeSession', 'current'), {
           players: [],
           rounds: [],
           status: 'setup',
-          lastAutoSavedTime: null,
+          lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
       }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `members/${playerIdToRemove}`);
     }
   };
 
   const handleSaveRound = async (roundScores: Record<string, number>) => {
-    triggerSyncVisual();
-    try {
-      let nextRounds = [...rounds];
-      if (editingRound) {
-        nextRounds = rounds.map(r => r.roundNumber === editingRound.roundNumber ? { ...r, scores: roundScores } : r);
-        setEditingRound(null);
-      } else {
-        const nextNum = rounds.length + 1;
-        const newRound: Round = {
-          roundNumber: nextNum,
-          scores: roundScores
-        };
-        nextRounds = [...rounds, newRound];
-      }
+    let nextRounds = [...rounds];
+    if (editingRound) {
+      nextRounds = rounds.map(r => r.roundNumber === editingRound.roundNumber ? { ...r, scores: roundScores } : r);
+      setEditingRound(null);
+    } else {
+      const nextNum = rounds.length + 1;
+      const newRound: Round = {
+        roundNumber: nextNum,
+        scores: roundScores
+      };
+      nextRounds.push(newRound);
+    }
 
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      await setDoc(doc(db, 'active_table', 'state'), {
+    try {
+      await setDoc(doc(db, 'activeSession', 'current'), {
         players,
         rounds: nextRounds,
         status,
-        lastAutoSavedTime: nowTime,
+        lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
   };
 
@@ -358,23 +382,21 @@ export default function App() {
 
   const handleUndoLastRound = async () => {
     if (rounds.length === 0) return;
-    triggerSyncVisual();
+    const nextRounds = rounds.slice(0, -1);
+
     try {
-      const nextRounds = rounds.slice(0, rounds.length - 1);
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      await setDoc(doc(db, 'active_table', 'state'), {
+      await setDoc(doc(db, 'activeSession', 'current'), {
         players,
         rounds: nextRounds,
         status,
-        lastAutoSavedTime: nowTime,
+        lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
   };
 
   const handleEndGameStatus = async () => {
-    triggerSyncVisual();
     if (rounds.length > 0 && players.length > 0) {
       const standings = players.map((player) => {
         const total = rounds.reduce((sum, r) => sum + (r.scores[player.id] || 0), 0);
@@ -383,8 +405,9 @@ export default function App() {
 
       const winnerName = standings[0] ? standings[0].name : 'Unknown Player';
 
+      const gameId = `game-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
       const newArchivedGame: SavedGame = {
-        id: `game-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: gameId,
         players: [...players],
         rounds: [...rounds],
         date: new Date().toISOString(),
@@ -392,95 +415,76 @@ export default function App() {
       };
 
       try {
-        // Save matching logs in permanent directory
-        await setDoc(doc(db, 'games', newArchivedGame.id), newArchivedGame);
-        
-        // Terminate status of active table
-        await setDoc(doc(db, 'active_table', 'state'), {
-          players,
-          rounds,
-          status: 'ended',
-          lastAutoSavedTime,
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `games/${newArchivedGame.id}`);
+        await setDoc(doc(db, 'history', gameId), newArchivedGame);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, `history/${gameId}`);
       }
-    } else {
-      try {
-        await setDoc(doc(db, 'active_table', 'state'), {
-          players,
-          rounds,
-          status: 'ended',
-          lastAutoSavedTime,
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
-      }
+    }
+
+    try {
+      await setDoc(doc(db, 'activeSession', 'current'), {
+        players,
+        rounds,
+        status: 'ended',
+        lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
   };
 
   const handleClearHistory = async () => {
-    triggerSyncVisual();
     try {
-      const snapshot = await getDocs(collection(db, 'games'));
-      for (const gameDoc of snapshot.docs) {
-        await deleteDoc(doc(db, 'games', gameDoc.id));
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, 'games');
+      const querySnapshot = await getDocs(collection(db, 'history'));
+      const deletePromises = querySnapshot.docs.map(docSnap => deleteDoc(docSnap.ref));
+      await Promise.all(deletePromises);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, 'history');
     }
   };
 
   const handleResetAllClubhouseData = async () => {
-    triggerSyncVisual();
-    const DEFAULT_MEMBERS: Player[] = [
-      { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
-      { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
-      { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
-      { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
-    ];
-
     try {
-      // 1. Reset setup active table
-      await setDoc(doc(db, 'active_table', 'state'), {
+      // Clear players directory
+      const playersSnaps = await getDocs(collection(db, 'players'));
+      await Promise.all(playersSnaps.docs.map(docSnap => deleteDoc(docSnap.ref)));
+
+      // Write default seed templates back to Firebase
+      const DEFAULT_MEMBERS: Player[] = [
+        { id: 'member-1', name: 'Ashu', officialName: 'Ashok Kumar', nickname: 'Ashu' },
+        { id: 'member-2', name: 'Sanju', officialName: 'Sanjay Banerjee', nickname: 'Sanju' },
+        { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
+        { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
+      ];
+      await Promise.all(DEFAULT_MEMBERS.map(p => setDoc(doc(db, 'players', p.id), p)));
+      
+      // Clear archives
+      const historySnaps = await getDocs(collection(db, 'history'));
+      await Promise.all(historySnaps.docs.map(docSnap => deleteDoc(docSnap.ref)));
+
+      // Reset card table setup values
+      await setDoc(doc(db, 'activeSession', 'current'), {
         players: [],
         rounds: [],
         status: 'setup',
-        lastAutoSavedTime: null,
+        lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       });
-
-      // 2. Clear out all members and restore defaulted seed members
-      const membersSnapshot = await getDocs(collection(db, 'members'));
-      for (const mDoc of membersSnapshot.docs) {
-        await deleteDoc(doc(db, 'members', mDoc.id));
-      }
-      for (const m of DEFAULT_MEMBERS) {
-        await setDoc(doc(db, 'members', m.id), m);
-      }
-
-      // 3. Clear games directory
-      const gamesSnapshot = await getDocs(collection(db, 'games'));
-      for (const gDoc of gamesSnapshot.docs) {
-        await deleteDoc(doc(db, 'games', gDoc.id));
-      }
-
+      
       setActiveTab('table');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'reset_all');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'all');
     }
   };
 
   const handleDeleteGame = async (gameId: string) => {
-    triggerSyncVisual();
     try {
-      await deleteDoc(doc(db, 'games', gameId));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `games/${gameId}`);
+      await deleteDoc(doc(db, 'history', gameId));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `history/${gameId}`);
     }
   };
 
   const handleUpdateCompletedGame = async (updatedGame: SavedGame) => {
-    triggerSyncVisual();
     const standings = updatedGame.players.map((p) => {
       const total = updatedGame.rounds.reduce((sum, r) => sum + (r.scores[p.id] || 0), 0);
       return { ...p, total };
@@ -493,9 +497,9 @@ export default function App() {
     };
 
     try {
-      await setDoc(doc(db, 'games', updatedGame.id), nextGame);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `games/${updatedGame.id}`);
+      await setDoc(doc(db, 'history', updatedGame.id), nextGame);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `history/${updatedGame.id}`);
     }
   };
 
@@ -504,23 +508,104 @@ export default function App() {
   };
 
   const confirmResetGame = async () => {
-    triggerSyncVisual();
     try {
-      await setDoc(doc(db, 'active_table', 'state'), {
+      await setDoc(doc(db, 'activeSession', 'current'), {
         players: [],
         rounds: [],
         status: 'setup',
-        lastAutoSavedTime: null,
+        lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       });
       setShowResetConfirm(false);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'active_table/state');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-editorial-bg text-editorial-text flex flex-col justify-center items-center font-sans">
+        <div className="space-y-4 text-center">
+          <span className="text-4xl text-editorial-gold animate-bounce block">⚜️</span>
+          <h2 className="text-md font-mono uppercase tracking-[0.2em] text-[#ece5d8]">AGNIBINA SANGHA</h2>
+          <p className="text-[11px] uppercase tracking-widest text-[#8e8271] font-mono animate-pulse">Establishing Secure Database Handshake...</p>
+        </div>
+      </div>
+    );
+  }
 
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-editorial-bg text-[#ece5d8] flex flex-col justify-center items-center p-4 font-sans selection:bg-editorial-gold/20" id="login-screen">
+        <div className="max-w-md w-full bg-[#0a0a09] border border-editorial-border p-8 sm:p-10 shadow-2xl relative space-y-6">
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-editorial-gold" />
+          
+          <div className="text-center space-y-3">
+            <span className="text-4xl mx-auto block text-editorial-gold">⚜️</span>
+            <div>
+              <h1 className="text-3xl font-black uppercase tracking-tight leading-none text-white">
+                Agnibina Sangha
+              </h1>
+              <span className="text-[10px] uppercase tracking-[0.3em] font-mono text-editorial-gold mt-2 block">
+                Bray Card Club • Est. 1947
+              </span>
+            </div>
+            <p className="text-xs text-[#8e8271] max-w-xs mx-auto leading-relaxed pt-2 border-t border-[#1f1d19]/80 uppercase font-mono tracking-widest font-semibold">
+              Authorized Clubhouse Access Only
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-xs text-[#ece5d8]/75 text-center leading-relaxed font-serif max-w-sm mx-auto">
+              Welcome to the digital ledger of Bray Card Club. Sign in to record card tallies, register club members, and browse historical match records.
+            </p>
+          </div>
+
+          {authError && (
+            <div className="p-3 bg-red-950/40 border border-red-900/60 text-red-300 text-xs font-mono rounded-xs space-y-1 text-center" id="auth-error-alert">
+              <div className="font-bold flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wider text-red-400">
+                <AlertTriangle className="w-3.5 h-3.5" /> SIGN IN ATTEMPT
+              </div>
+              <p className="text-[#f1cccc]/90 text-[11px] leading-relaxed">{authError}</p>
+            </div>
+          )}
+
+          <div className="space-y-3 pt-2">
+            <button
+              onClick={handleGoogleSignIn}
+              className="w-full py-4 bg-editorial-gold text-black hover:bg-amber-400 font-extrabold uppercase tracking-[0.2em] text-xs transition-all duration-300 cursor-pointer text-center flex items-center justify-center gap-3 relative overflow-hidden active:scale-98"
+              id="google-signin-btn"
+            >
+              <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-6.886 4.114-4.815 0-8.73-3.87-8.73-8.628s3.915-8.628 8.73-8.628c2.195 0 4.137.8 5.66 2.308l3.197-3.197C18.82 1.323 15.76.5 12.24.5.5.5-2.22 8.71-.5 12.24s11.516 11.24 12.24 11.24c6.158 0 11.01-4.411 11.01-11.24 0-.765-.078-1.455-.213-1.955H12.24z"/>
+              </svg>
+              <span>Sign In with Google</span>
+            </button>
+
+            <div className="relative flex py-2 items-center">
+              <div className="flex-grow border-t border-[#1f1d19]/80" />
+              <span className="flex-shrink mx-4 text-[9px] text-[#8e8271] font-mono uppercase tracking-widest font-bold">or</span>
+              <div className="flex-grow border-t border-[#1f1d19]/80" />
+            </div>
+
+            <button
+              onClick={handleGuestSignIn}
+              className="w-full py-3.5 bg-transparent hover:bg-white/5 text-[#ece5d8] font-bold uppercase tracking-[0.15em] text-[10px] border border-editorial-border/60 transition-all duration-300 cursor-pointer text-center flex items-center justify-center gap-2 rounded-xs active:scale-98"
+              id="guest-signin-btn"
+            >
+              <span>Bypass Popups (Guest Access)</span>
+            </button>
+          </div>
+
+          <div className="text-[9px] text-[#8e8271] uppercase tracking-widest text-center font-mono pt-4 border-t border-[#1f1d19]/80">
+            Securely encrypted via Firestore Enterprise
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
+
     <div className="min-h-screen bg-editorial-bg text-editorial-text flex flex-col font-sans selection:bg-editorial-gold/20" id="main-view">
       {/* Editorial Header Section */}
       <header className="border-b border-editorial-border pb-6 pt-8 px-6 sm:px-8 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 max-w-4xl w-full mx-auto" id="app-header">
@@ -538,7 +623,24 @@ export default function App() {
           </p>
         </div>
         
-        <div className="flex items-center sm:items-end justify-between sm:justify-start w-full sm:w-auto gap-6 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0">
+        <div className="flex flex-wrap items-center sm:items-end justify-between sm:justify-end w-full sm:w-auto gap-5 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0" id="header-user-controls">
+          <div className="text-left sm:text-right font-mono">
+            <div className="text-[9px] uppercase tracking-widest text-editorial-muted font-bold">Member Account</div>
+            <div className="text-xs font-bold text-[#ece5d8] truncate max-w-[140px]" title={currentUser?.email || ''}>
+              {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Unknown'}
+            </div>
+          </div>
+          
+          <button
+            onClick={() => logoutUser()}
+            className="px-3 py-1.5 bg-transparent text-editorial-muted hover:text-red-400 font-mono text-[10px] uppercase tracking-widest font-bold border border-editorial-border/60 hover:border-red-900/40 rounded-xs transition-all cursor-pointer"
+            id="auth-signout-btn"
+          >
+            Sign Out
+          </button>
+
+          <div className="h-4 w-[1px] bg-editorial-border/40 hidden sm:block" />
+
           <div className="text-left sm:text-right">
             <div className="text-[10px] uppercase tracking-widest text-editorial-muted mb-0.5 font-bold">Active Table</div>
             <div className="text-lg font-mono font-bold text-editorial-text" id="activeStatusDisplay">
@@ -805,8 +907,8 @@ export default function App() {
               ⚜️ {isAutoSaving ? 'Auto-saving Table state...' : lastAutoSavedTime ? `Tally saved at ${lastAutoSavedTime}` : 'Autosave Armed'}
             </span>
           )}
-          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-editorial-gold animate-pulse"></span> Cloud Storage Active</span>
-          <span>Real-time Sync Active</span>
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-editorial-gold animate-pulse"></span> Local Storage Active</span>
+          <span>Cloud Sync Ready</span>
         </div>
       </footer>
 

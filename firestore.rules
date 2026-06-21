@@ -1,12 +1,25 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
     // 1. Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Core Helpers
+    // Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isEmailVerified() && request.auth.token.email == 'mukherjeanku@gmail.com';
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -19,47 +32,58 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // --- MEMBERS COLLECTION ---
+    // Entity validator helpers
     function isValidPlayer(data) {
-      return data.id is string && data.id.size() <= 128
-        && data.name is string && data.name.size() <= 128
-        && data.officialName is string && data.officialName.size() <= 128
-        && (!('nickname' in data) || data.nickname == null || (data.nickname is string && data.nickname.size() <= 128))
-        && (!('avatarUrl' in data) || data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 1000000));
+      return data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+             data.officialName is string && data.officialName.size() >= 1 && data.officialName.size() <= 300 &&
+             (!('nickname' in data) || (data.nickname is string && data.nickname.size() <= 200)) &&
+             (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 300000)) &&
+             data.keys().hasAll(['id', 'name', 'officialName']) &&
+             data.keys().size() >= 3 && data.keys().size() <= 5;
     }
 
-    match /members/{memberId} {
-      allow read: if true;
-      allow create, update: if isValidId(memberId) && isValidPlayer(incoming());
-      allow delete: if isValidId(memberId);
+    function isValidCompletedGame(data) {
+      return data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+             data.players is list && data.players.size() <= 50 &&
+             data.rounds is list && data.rounds.size() <= 1000 &&
+             data.date is string && data.date.size() <= 200 &&
+             data.winnerName is string && data.winnerName.size() <= 200 &&
+             data.keys().hasAll(['id', 'players', 'rounds', 'date', 'winnerName']) &&
+             data.keys().size() == 5;
     }
 
-    // --- GAMES COLLECTION ---
-    function isValidSavedGame(data) {
-      return data.id is string && data.id.size() <= 128
-        && data.players is list && data.players.size() <= 20
-        && data.rounds is list && data.rounds.size() <= 1000
-        && data.date is string && data.date.size() <= 128
-        && data.winnerName is string && data.winnerName.size() <= 128;
+    // Validation helper must wrap entire update logic
+    function isValidActiveSession(data) {
+      return data.players is list && data.players.size() <= 50 &&
+             data.rounds is list && data.rounds.size() <= 1000 &&
+             data.status is string && (data.status == 'setup' || data.status == 'playing' || data.status == 'ended') &&
+             (!('lastAutoSavedTime' in data) || (data.lastAutoSavedTime is string && data.lastAutoSavedTime.size() <= 128)) &&
+             data.keys().hasAll(['players', 'rounds', 'status']) &&
+             data.keys().size() >= 3 && data.keys().size() <= 4;
     }
 
-    match /games/{gameId} {
-      allow read: if true;
-      allow create, update: if isValidId(gameId) && isValidSavedGame(incoming());
-      allow delete: if isValidId(gameId);
+    // Collections
+    match /players/{playerId} {
+      allow get, list: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(playerId) && playerId == incoming().id && isValidPlayer(incoming());
+      allow delete: if isAdmin();
     }
 
-    // --- ACTIVE TABLE ---
-    function isValidActiveTable(data) {
-      return data.players is list && data.players.size() <= 20
-        && data.rounds is list && data.rounds.size() <= 1000
-        && data.status is string && (data.status == 'setup' || data.status == 'playing' || data.status == 'ended')
-        && (!('lastAutoSavedTime' in data) || data.lastAutoSavedTime == null || (data.lastAutoSavedTime is string && data.lastAutoSavedTime.size() <= 128))
-        && (!('updatedAt' in data) || data.updatedAt == null || (data.updatedAt is string && data.updatedAt.size() <= 128));
+    match /history/{gameId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(gameId) && gameId == incoming().id && isValidCompletedGame(incoming());
+      allow update: if isSignedIn() && isValidId(gameId) && isValidCompletedGame(incoming()) && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['winnerName', 'players', 'rounds'])
+      );
+      allow delete: if isAdmin();
     }
 
-    match /active_table/{docId} {
-      allow read, write: if true;
+    match /activeSession/{docId} {
+      allow get, list: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(docId) && isValidActiveSession(incoming());
+      allow delete: if isAdmin();
     }
   }
 }
