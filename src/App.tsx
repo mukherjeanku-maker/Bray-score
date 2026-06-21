@@ -13,7 +13,7 @@ import { Flame, PlusCircle, RotateCcw, AlertTriangle, ShieldAlert, CheckCircle, 
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, doc, setDoc, deleteDoc, getDocs, onSnapshot } from 'firebase/firestore';
-import { db, auth, signInWithGoogle, signInGuest, logoutUser, handleFirestoreError, OperationType } from './lib/firebase';
+import { db, auth, signInGuest, handleFirestoreError, OperationType, cleanUndefined } from './lib/firebase';
 
 function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): SavedGame[] {
   if (!rawHistory || rawHistory.length === 0 || !registry || registry.length === 0) return rawHistory || [];
@@ -84,32 +84,7 @@ function normalizeAndMergeHistory(rawHistory: SavedGame[], registry: Player[]): 
 export default function App() {
   // --- AUTHENTICATION STATE ---
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState<boolean>(true);
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  const handleGoogleSignIn = async () => {
-    setAuthError(null);
-    try {
-      await signInWithGoogle();
-    } catch (err: any) {
-      console.error("Google sign in error in App:", err);
-      if (err.code === 'auth/popup-closed-by-user' || err.message?.includes('popup-closed-by-user')) {
-        setAuthError("Popup was closed or blocked. Click again to sign-in, or use Guest Access below if you are in a sandboxed preview frame.");
-      } else {
-        setAuthError(err.message || String(err));
-      }
-    }
-  };
-
-  const handleGuestSignIn = async () => {
-    setAuthError(null);
-    try {
-      await signInGuest();
-    } catch (err: any) {
-      console.error("Guest sign in error in App:", err);
-      setAuthError("Guest Access failed: " + (err.message || String(err)));
-    }
-  };
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
 
   // --- STATE ---
   const [players, setPlayers] = useState<Player[]>([]);
@@ -122,7 +97,7 @@ export default function App() {
   
   // Navigation tabs for the single-view dashboard
   const [activeTab, setActiveTab] = useState<'table' | 'members' | 'comparison' | 'history' | 'admin'>('table');
-  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [isAdmin, setIsAdmin] = useState<boolean>(true); // Auto-granted for command panels on the shared board
 
   // Permanent daily match database
   const [history, setHistory] = useState<SavedGame[]>([]);
@@ -136,25 +111,25 @@ export default function App() {
 
   // --- MONITORS AUTH STATE CHANGE ---
   useEffect(() => {
+    let isMounted = true;
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      setAuthLoading(false);
-      
-      // Auto upgrade primary runtime user to administrator role
+      if (!isMounted) return;
       if (user) {
-        const isEmailAdmin = user.email === 'mukherjeanku@gmail.com';
-        setIsAdmin(isEmailAdmin);
+        setCurrentUser(user);
+        setIsAdmin(true);
       } else {
-        setIsAdmin(false);
+        setCurrentUser(null);
       }
+      setAuthLoading(false);
     });
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, []);
 
   // --- CLOUD FIRESTORE SYNC: PLAYERS DIRECTORY ---
   useEffect(() => {
-    if (!currentUser) return;
-
     const playersRef = collection(db, 'players');
     const unsubscribe = onSnapshot(playersRef, (snapshot) => {
       const list: Player[] = [];
@@ -172,7 +147,7 @@ export default function App() {
         ];
         DEFAULT_MEMBERS.forEach(async (p) => {
           try {
-            await setDoc(doc(db, 'players', p.id), p);
+            await setDoc(doc(db, 'players', p.id), cleanUndefined(p));
           } catch (e) {
             handleFirestoreError(e, OperationType.WRITE, `players/${p.id}`);
           }
@@ -185,12 +160,10 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [currentUser]);
+  }, []);
 
   // --- CLOUD FIRESTORE SYNC: HISTORIC MATCH LOGS ---
   useEffect(() => {
-    if (!currentUser) return;
-
     const historyRef = collection(db, 'history');
     const unsubscribe = onSnapshot(historyRef, (snapshot) => {
       const list: SavedGame[] = [];
@@ -206,12 +179,10 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [currentUser, savedPlayers]);
+  }, [savedPlayers]);
 
   // --- CLOUD FIRESTORE SYNC: ACTIVE CARD TABLE SESSION ---
   useEffect(() => {
-    if (!currentUser) return;
-
     const activeSessionRef = doc(db, 'activeSession', 'current');
     const unsubscribe = onSnapshot(activeSessionRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -225,11 +196,11 @@ export default function App() {
       } else {
         // Initialize current activeSession doc
         try {
-          setDoc(activeSessionRef, {
+          setDoc(activeSessionRef, cleanUndefined({
             players: [],
             rounds: [],
             status: 'setup'
-          });
+          }));
         } catch (e) {
           handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
         }
@@ -239,7 +210,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [currentUser]);
+  }, []);
 
 
   // --- FIRESTORE DIRECT WRITE ACTIONS ---
@@ -276,12 +247,12 @@ export default function App() {
     // Write start card table status to Cloud Firestore
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     try {
-      await setDoc(doc(db, 'activeSession', 'current'), {
+      await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
         players: canonicalPlayers,
         rounds: [],
         status: 'playing',
         lastAutoSavedTime: timeStr
-      });
+      }));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
@@ -289,7 +260,7 @@ export default function App() {
     // Save profile attributes updates directly in cloud players directory
     canonicalPlayers.forEach(async (cp) => {
       try {
-        await setDoc(doc(db, 'players', cp.id), cp);
+        await setDoc(doc(db, 'players', cp.id), cleanUndefined(cp));
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `players/${cp.id}`);
       }
@@ -298,7 +269,7 @@ export default function App() {
 
   const handleUpdatePlayer = async (updatedPlayer: Player) => {
     try {
-      await setDoc(doc(db, 'players', updatedPlayer.id), updatedPlayer);
+      await setDoc(doc(db, 'players', updatedPlayer.id), cleanUndefined(updatedPlayer));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `players/${updatedPlayer.id}`);
     }
@@ -307,12 +278,12 @@ export default function App() {
     if (status !== 'setup') {
       const updatedActivePlayers = players.map(p => p.id === updatedPlayer.id ? updatedPlayer : p);
       try {
-        await setDoc(doc(db, 'activeSession', 'current'), {
+        await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
           players: updatedActivePlayers,
           rounds,
           status,
           lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        });
+        }));
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
       }
@@ -321,7 +292,7 @@ export default function App() {
 
   const handleAddClubPlayer = async (p: Player) => {
     try {
-      await setDoc(doc(db, 'players', p.id), p);
+      await setDoc(doc(db, 'players', p.id), cleanUndefined(p));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `players/${p.id}`);
     }
@@ -337,12 +308,12 @@ export default function App() {
     // Reset table setup if a seated player profile was deleted
     if (players.some(p => p.id === playerIdToRemove)) {
       try {
-        await setDoc(doc(db, 'activeSession', 'current'), {
+        await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
           players: [],
           rounds: [],
           status: 'setup',
           lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        });
+        }));
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
       }
@@ -364,12 +335,12 @@ export default function App() {
     }
 
     try {
-      await setDoc(doc(db, 'activeSession', 'current'), {
+      await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
         players,
         rounds: nextRounds,
         status,
         lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      });
+      }));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
@@ -385,12 +356,12 @@ export default function App() {
     const nextRounds = rounds.slice(0, -1);
 
     try {
-      await setDoc(doc(db, 'activeSession', 'current'), {
+      await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
         players,
         rounds: nextRounds,
         status,
         lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      });
+      }));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
@@ -415,19 +386,19 @@ export default function App() {
       };
 
       try {
-        await setDoc(doc(db, 'history', gameId), newArchivedGame);
+        await setDoc(doc(db, 'history', gameId), cleanUndefined(newArchivedGame));
       } catch (e) {
         handleFirestoreError(e, OperationType.WRITE, `history/${gameId}`);
       }
     }
 
     try {
-      await setDoc(doc(db, 'activeSession', 'current'), {
+      await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
         players,
         rounds,
         status: 'ended',
         lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      });
+      }));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
     }
@@ -456,19 +427,19 @@ export default function App() {
         { id: 'member-3', name: 'Nobi', officialName: 'Pronab Mukherjee', nickname: 'Nobi' },
         { id: 'member-4', name: 'Amits', officialName: 'Amit Sen', nickname: 'Amits' },
       ];
-      await Promise.all(DEFAULT_MEMBERS.map(p => setDoc(doc(db, 'players', p.id), p)));
+      await Promise.all(DEFAULT_MEMBERS.map(p => setDoc(doc(db, 'players', p.id), cleanUndefined(p))));
       
       // Clear archives
       const historySnaps = await getDocs(collection(db, 'history'));
       await Promise.all(historySnaps.docs.map(docSnap => deleteDoc(docSnap.ref)));
 
       // Reset card table setup values
-      await setDoc(doc(db, 'activeSession', 'current'), {
+      await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
         players: [],
         rounds: [],
         status: 'setup',
         lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      });
+      }));
       
       setActiveTab('table');
     } catch (e) {
@@ -497,7 +468,7 @@ export default function App() {
     };
 
     try {
-      await setDoc(doc(db, 'history', updatedGame.id), nextGame);
+      await setDoc(doc(db, 'history', updatedGame.id), cleanUndefined(nextGame));
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `history/${updatedGame.id}`);
     }
@@ -509,12 +480,12 @@ export default function App() {
 
   const confirmResetGame = async () => {
     try {
-      await setDoc(doc(db, 'activeSession', 'current'), {
+      await setDoc(doc(db, 'activeSession', 'current'), cleanUndefined({
         players: [],
         rounds: [],
         status: 'setup',
         lastAutoSavedTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      });
+      }));
       setShowResetConfirm(false);
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, 'activeSession/current');
@@ -528,77 +499,6 @@ export default function App() {
           <span className="text-4xl text-editorial-gold animate-bounce block">⚜️</span>
           <h2 className="text-md font-mono uppercase tracking-[0.2em] text-[#ece5d8]">AGNIBINA SANGHA</h2>
           <p className="text-[11px] uppercase tracking-widest text-[#8e8271] font-mono animate-pulse">Establishing Secure Database Handshake...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!currentUser) {
-    return (
-      <div className="min-h-screen bg-editorial-bg text-[#ece5d8] flex flex-col justify-center items-center p-4 font-sans selection:bg-editorial-gold/20" id="login-screen">
-        <div className="max-w-md w-full bg-[#0a0a09] border border-editorial-border p-8 sm:p-10 shadow-2xl relative space-y-6">
-          <div className="absolute top-0 left-0 right-0 h-1.5 bg-editorial-gold" />
-          
-          <div className="text-center space-y-3">
-            <span className="text-4xl mx-auto block text-editorial-gold">⚜️</span>
-            <div>
-              <h1 className="text-3xl font-black uppercase tracking-tight leading-none text-white">
-                Agnibina Sangha
-              </h1>
-              <span className="text-[10px] uppercase tracking-[0.3em] font-mono text-editorial-gold mt-2 block">
-                Bray Card Club • Est. 1947
-              </span>
-            </div>
-            <p className="text-xs text-[#8e8271] max-w-xs mx-auto leading-relaxed pt-2 border-t border-[#1f1d19]/80 uppercase font-mono tracking-widest font-semibold">
-              Authorized Clubhouse Access Only
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            <p className="text-xs text-[#ece5d8]/75 text-center leading-relaxed font-serif max-w-sm mx-auto">
-              Welcome to the digital ledger of Bray Card Club. Sign in to record card tallies, register club members, and browse historical match records.
-            </p>
-          </div>
-
-          {authError && (
-            <div className="p-3 bg-red-950/40 border border-red-900/60 text-red-300 text-xs font-mono rounded-xs space-y-1 text-center" id="auth-error-alert">
-              <div className="font-bold flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wider text-red-400">
-                <AlertTriangle className="w-3.5 h-3.5" /> SIGN IN ATTEMPT
-              </div>
-              <p className="text-[#f1cccc]/90 text-[11px] leading-relaxed">{authError}</p>
-            </div>
-          )}
-
-          <div className="space-y-3 pt-2">
-            <button
-              onClick={handleGoogleSignIn}
-              className="w-full py-4 bg-editorial-gold text-black hover:bg-amber-400 font-extrabold uppercase tracking-[0.2em] text-xs transition-all duration-300 cursor-pointer text-center flex items-center justify-center gap-3 relative overflow-hidden active:scale-98"
-              id="google-signin-btn"
-            >
-              <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-6.886 4.114-4.815 0-8.73-3.87-8.73-8.628s3.915-8.628 8.73-8.628c2.195 0 4.137.8 5.66 2.308l3.197-3.197C18.82 1.323 15.76.5 12.24.5.5.5-2.22 8.71-.5 12.24s11.516 11.24 12.24 11.24c6.158 0 11.01-4.411 11.01-11.24 0-.765-.078-1.455-.213-1.955H12.24z"/>
-              </svg>
-              <span>Sign In with Google</span>
-            </button>
-
-            <div className="relative flex py-2 items-center">
-              <div className="flex-grow border-t border-[#1f1d19]/80" />
-              <span className="flex-shrink mx-4 text-[9px] text-[#8e8271] font-mono uppercase tracking-widest font-bold">or</span>
-              <div className="flex-grow border-t border-[#1f1d19]/80" />
-            </div>
-
-            <button
-              onClick={handleGuestSignIn}
-              className="w-full py-3.5 bg-transparent hover:bg-white/5 text-[#ece5d8] font-bold uppercase tracking-[0.15em] text-[10px] border border-editorial-border/60 transition-all duration-300 cursor-pointer text-center flex items-center justify-center gap-2 rounded-xs active:scale-98"
-              id="guest-signin-btn"
-            >
-              <span>Bypass Popups (Guest Access)</span>
-            </button>
-          </div>
-
-          <div className="text-[9px] text-[#8e8271] uppercase tracking-widest text-center font-mono pt-4 border-t border-[#1f1d19]/80">
-            Securely encrypted via Firestore Enterprise
-          </div>
         </div>
       </div>
     );
@@ -624,23 +524,6 @@ export default function App() {
         </div>
         
         <div className="flex flex-wrap items-center sm:items-end justify-between sm:justify-end w-full sm:w-auto gap-5 border-t sm:border-t-0 border-editorial-border/40 pt-4 sm:pt-0" id="header-user-controls">
-          <div className="text-left sm:text-right font-mono">
-            <div className="text-[9px] uppercase tracking-widest text-editorial-muted font-bold">Member Account</div>
-            <div className="text-xs font-bold text-[#ece5d8] truncate max-w-[140px]" title={currentUser?.email || ''}>
-              {currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Unknown'}
-            </div>
-          </div>
-          
-          <button
-            onClick={() => logoutUser()}
-            className="px-3 py-1.5 bg-transparent text-editorial-muted hover:text-red-400 font-mono text-[10px] uppercase tracking-widest font-bold border border-editorial-border/60 hover:border-red-900/40 rounded-xs transition-all cursor-pointer"
-            id="auth-signout-btn"
-          >
-            Sign Out
-          </button>
-
-          <div className="h-4 w-[1px] bg-editorial-border/40 hidden sm:block" />
-
           <div className="text-left sm:text-right">
             <div className="text-[10px] uppercase tracking-widest text-editorial-muted mb-0.5 font-bold">Active Table</div>
             <div className="text-lg font-mono font-bold text-editorial-text" id="activeStatusDisplay">
